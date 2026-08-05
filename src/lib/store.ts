@@ -2,7 +2,7 @@
 import { create } from "zustand";
 import { persist } from "zustand/middleware";
 import type {
-  Household, Member, WeeklyPlan, PlanMeal, PantryItem, Order, ShoppingItem, Platform,
+  Household, Member, WeeklyPlan, PlanMeal, PantryItem, Order, ShoppingItem, Platform, Recipe,
 } from "./types";
 import { RECIPES, filterRecipes, getIngredientById } from "./recipes";
 import { resolveAdapter } from "./mcp/adapter";
@@ -50,7 +50,30 @@ interface AppState {
 
 const MEAL_TYPES = ["breakfast", "lunch", "dinner"] as const;
 
-function generatePlan(household: Household, history: string[]): WeeklyPlan {
+// Fraction of a recipe's ingredients already sitting in the pantry — used to
+// bias plan generation toward using up stock on hand (PRD FR: "next week's
+// plan generation accounts for remaining stock, reducing unnecessary purchases").
+function pantryScore(recipe: Recipe, pantry: PantryItem[]): number {
+  if (recipe.ingredients.length === 0 || pantry.length === 0) return 0;
+  const matched = recipe.ingredients.filter((ing) =>
+    pantry.some((p) => p.name.toLowerCase() === ing.name.toLowerCase() && p.quantity > 0)
+  ).length;
+  return matched / recipe.ingredients.length;
+}
+
+function weightedPick(recipes: Recipe[], pantry: PantryItem[]): Recipe | undefined {
+  if (recipes.length === 0) return undefined;
+  const weights = recipes.map((r) => 1 + pantryScore(r, pantry) * 3);
+  const total = weights.reduce((a, b) => a + b, 0);
+  let r = Math.random() * total;
+  for (let i = 0; i < recipes.length; i++) {
+    r -= weights[i];
+    if (r <= 0) return recipes[i];
+  }
+  return recipes[recipes.length - 1];
+}
+
+function generatePlan(household: Household, history: string[], pantry: PantryItem[]): WeeklyPlan {
   const weekStart = format(startOfWeek(new Date(), { weekStartsOn: 1 }), "yyyy-MM-dd");
   const meals: PlanMeal[] = [];
   const usedThisWeek = new Set<string>();
@@ -68,7 +91,7 @@ function generatePlan(household: Household, history: string[]): WeeklyPlan {
       const newThisWeek = all.filter(r => !usedThisWeek.has(r.id));
       const pool = fresh.length > 0 ? fresh : newThisWeek.length > 0 ? newThisWeek : all;
 
-      const recipe = pool[Math.floor(Math.random() * pool.length)];
+      const recipe = weightedPick(pool, pantry);
       if (recipe) usedThisWeek.add(recipe.id);
 
       meals.push({
@@ -124,9 +147,9 @@ export const useAppStore = create<AppState>()(
             : null,
         })),
       completeOnboarding: () => {
-        const { household, usedRecipeHistory } = get();
+        const { household, usedRecipeHistory, pantry } = get();
         if (!household) return;
-        const plan = generatePlan(household, usedRecipeHistory);
+        const plan = generatePlan(household, usedRecipeHistory, pantry);
         const newIds = plan.meals.map(m => m.recipeId).filter((id): id is string => id !== null);
         set({
           household: { ...household, onboardingComplete: true },
@@ -137,9 +160,9 @@ export const useAppStore = create<AppState>()(
       setOnboardingStep: (step) => set({ onboardingStep: step }),
 
       generateWeeklyPlan: () => {
-        const { household, usedRecipeHistory } = get();
+        const { household, usedRecipeHistory, pantry } = get();
         if (!household) return;
-        const plan = generatePlan(household, usedRecipeHistory);
+        const plan = generatePlan(household, usedRecipeHistory, pantry);
         const newIds = plan.meals.map(m => m.recipeId).filter((id): id is string => id !== null);
         set({ weeklyPlan: plan, usedRecipeHistory: [...usedRecipeHistory, ...newIds] });
       },
