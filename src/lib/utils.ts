@@ -19,6 +19,7 @@ export const DAYS_FULL = ["Monday", "Tuesday", "Wednesday", "Thursday", "Friday"
 export const MEAL_LABELS: Record<string, string> = {
   breakfast: "Breakfast",
   lunch: "Lunch",
+  snack: "Snack",
   dinner: "Dinner",
 };
 

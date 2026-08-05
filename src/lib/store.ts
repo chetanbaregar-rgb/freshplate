@@ -8,6 +8,55 @@ import { RECIPES, filterRecipes, getIngredientById } from "./recipes";
 import { resolveAdapter } from "./mcp/adapter";
 import { startOfWeek, format } from "date-fns";
 
+/**
+ * One-time, upfront availability check across every diet-appropriate recipe's
+ * non-optional ingredients — done once per plan generation (not per slot)
+ * since the same ingredients (onion, rice, tomato…) recur across dozens of
+ * recipes. Only runs against a genuinely connected platform; `isConnected()`
+ * — and therefore `live` — is false without real OAuth credentials, in which
+ * case this returns an empty cache and availabilityScore() below falls back
+ * to a neutral score (mock data always reports "available", so it carries no
+ * real signal anyway).
+ */
+async function buildAvailabilityCache(candidates: Recipe[], platform: Platform): Promise<Map<string, boolean>> {
+  const cache = new Map<string, boolean>();
+  const { adapter, live } = await resolveAdapter(platform);
+  if (!live) return cache;
+
+  const uniqueTerms = new Set<string>();
+  for (const recipe of candidates) {
+    for (const ing of recipe.ingredients) {
+      if (!ing.optional) uniqueTerms.add(ing.searchTerms[platform]);
+    }
+  }
+
+  const results = await Promise.all(
+    Array.from(uniqueTerms).map(async (term) => {
+      try {
+        const products = await adapter.searchProducts(term);
+        return { term, available: products.some((p) => p.available) };
+      } catch {
+        return { term, available: true }; // fail open — a flaky lookup shouldn't sink a recipe
+      }
+    })
+  );
+  for (const r of results) cache.set(r.term, r.available);
+  return cache;
+}
+
+/** Fraction of a recipe's non-optional ingredients confirmed available on
+ *  `platform`. Neutral (0.5) when there's no cache signal to judge by — an
+ *  unchecked recipe shouldn't be penalized relative to a checked one. */
+function availabilityScore(recipe: Recipe, platform: Platform | null, cache: Map<string, boolean>): number {
+  if (!platform || cache.size === 0) return 0.5;
+  const required = recipe.ingredients.filter((i) => !i.optional);
+  if (required.length === 0) return 0.5;
+  const known = required.filter((i) => cache.has(i.searchTerms[platform]));
+  if (known.length === 0) return 0.5;
+  const availableCount = known.filter((i) => cache.get(i.searchTerms[platform])).length;
+  return availableCount / known.length;
+}
+
 interface AppState {
   household: Household | null;
   weeklyPlan: WeeklyPlan | null;
@@ -23,11 +72,11 @@ interface AppState {
   addMember: (m: Member) => void;
   updateMember: (id: string, patch: Partial<Member>) => void;
   removeMember: (id: string) => void;
-  completeOnboarding: () => void;
+  completeOnboarding: () => Promise<void>;
   setOnboardingStep: (step: number) => void;
 
   // Plan actions
-  generateWeeklyPlan: () => void;
+  generateWeeklyPlan: () => Promise<void>;
   swapMeal: (day: number, mealType: string, recipeId: string) => void;
   lockMeal: (day: number, mealType: string) => void;
   toggleOrderIn: (day: number, mealType: string) => void;
@@ -48,7 +97,7 @@ interface AppState {
   markMealCooked: (day: number, mealType: string) => void;
 }
 
-const MEAL_TYPES = ["breakfast", "lunch", "dinner"] as const;
+const MEAL_TYPES = ["breakfast", "lunch", "snack", "dinner"] as const;
 
 // Fraction of a recipe's ingredients already sitting in the pantry — used to
 // bias plan generation toward using up stock on hand (PRD FR: "next week's
@@ -61,9 +110,16 @@ function pantryScore(recipe: Recipe, pantry: PantryItem[]): number {
   return matched / recipe.ingredients.length;
 }
 
-function weightedPick(recipes: Recipe[], pantry: PantryItem[]): Recipe | undefined {
+function weightedPick(
+  recipes: Recipe[],
+  pantry: PantryItem[],
+  platform: Platform | null,
+  availabilityCache: Map<string, boolean>
+): Recipe | undefined {
   if (recipes.length === 0) return undefined;
-  const weights = recipes.map((r) => 1 + pantryScore(r, pantry) * 3);
+  const weights = recipes.map(
+    (r) => 1 + pantryScore(r, pantry) * 3 + availabilityScore(r, platform, availabilityCache) * 2
+  );
   const total = weights.reduce((a, b) => a + b, 0);
   let r = Math.random() * total;
   for (let i = 0; i < recipes.length; i++) {
@@ -73,15 +129,35 @@ function weightedPick(recipes: Recipe[], pantry: PantryItem[]): Recipe | undefin
   return recipes[recipes.length - 1];
 }
 
-function generatePlan(household: Household, history: string[], pantry: PantryItem[]): WeeklyPlan {
+async function generatePlan(household: Household, history: string[], pantry: PantryItem[]): Promise<WeeklyPlan> {
   const weekStart = format(startOfWeek(new Date(), { weekStartsOn: 1 }), "yyyy-MM-dd");
   const meals: PlanMeal[] = [];
   const usedThisWeek = new Set<string>();
 
+  // Prefer state of origin for authentic regional recipes (per onboarding
+  // copy: "your origin to suggest authentic regional recipes"), falling back
+  // to residence when origin wasn't given.
+  const regionPreference = household.stateOfOrigin ?? household.state;
+  const platform = household.connectedPlatforms[0] ?? null;
+
+  const dietPool = filterRecipes({ dietType: household.dietType });
+  const availabilityCache = platform
+    ? await buildAvailabilityCache(dietPool, platform)
+    : new Map<string, boolean>();
+
   for (let day = 0; day < 7; day++) {
     for (const mealType of MEAL_TYPES) {
       const primaryGoal = household.members[0]?.healthGoal ?? "maintenance";
-      const withGoal = filterRecipes({ dietType: household.dietType, mealType, goalTags: [primaryGoal] });
+
+      // Priority 1: matches household's region + goal
+      // Priority 2: matches goal only (region pool was empty for this slot)
+      // Fallback: diet + meal type only (existing behavior)
+      const withRegion = filterRecipes({
+        dietType: household.dietType, mealType, goalTags: [primaryGoal], state: regionPreference,
+      });
+      const withGoal = withRegion.length > 0
+        ? withRegion
+        : filterRecipes({ dietType: household.dietType, mealType, goalTags: [primaryGoal] });
       const all = withGoal.length > 0 ? withGoal : filterRecipes({ dietType: household.dietType, mealType });
 
       // Priority 1: not used this week AND not in any prior week
@@ -91,7 +167,7 @@ function generatePlan(household: Household, history: string[], pantry: PantryIte
       const newThisWeek = all.filter(r => !usedThisWeek.has(r.id));
       const pool = fresh.length > 0 ? fresh : newThisWeek.length > 0 ? newThisWeek : all;
 
-      const recipe = weightedPick(pool, pantry);
+      const recipe = weightedPick(pool, pantry, platform, availabilityCache);
       if (recipe) usedThisWeek.add(recipe.id);
 
       meals.push({
@@ -146,10 +222,10 @@ export const useAppStore = create<AppState>()(
               }
             : null,
         })),
-      completeOnboarding: () => {
+      completeOnboarding: async () => {
         const { household, usedRecipeHistory, pantry } = get();
         if (!household) return;
-        const plan = generatePlan(household, usedRecipeHistory, pantry);
+        const plan = await generatePlan(household, usedRecipeHistory, pantry);
         const newIds = plan.meals.map(m => m.recipeId).filter((id): id is string => id !== null);
         set({
           household: { ...household, onboardingComplete: true },
@@ -159,10 +235,10 @@ export const useAppStore = create<AppState>()(
       },
       setOnboardingStep: (step) => set({ onboardingStep: step }),
 
-      generateWeeklyPlan: () => {
+      generateWeeklyPlan: async () => {
         const { household, usedRecipeHistory, pantry } = get();
         if (!household) return;
-        const plan = generatePlan(household, usedRecipeHistory, pantry);
+        const plan = await generatePlan(household, usedRecipeHistory, pantry);
         const newIds = plan.meals.map(m => m.recipeId).filter((id): id is string => id !== null);
         set({ weeklyPlan: plan, usedRecipeHistory: [...usedRecipeHistory, ...newIds] });
       },

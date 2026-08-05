@@ -1,6 +1,12 @@
 import type { Recipe, Ingredient } from "./types";
+import { NORTH_RECIPES } from "./recipes/north";
+import { WEST_RECIPES } from "./recipes/west";
+import { SOUTH_RECIPES } from "./recipes/south";
+import { EAST_RECIPES } from "./recipes/east";
+import { CENTRAL_RECIPES } from "./recipes/central";
+import { NORTHEAST_RECIPES } from "./recipes/northeast";
 
-export const RECIPES: Recipe[] = [
+const CORE_RECIPES: Recipe[] = [
   // BREAKFAST
   {
     id: "poha",
@@ -635,6 +641,19 @@ export const RECIPES: Recipe[] = [
   },
 ];
 
+// Statewide regional library (see recipes.md for the full researched knowledge base
+// this was generated from) — one breakfast/lunch/snack/dinner recipe per state/UT
+// across six culinary zones, on top of the hand-curated CORE_RECIPES above.
+export const RECIPES: Recipe[] = [
+  ...CORE_RECIPES,
+  ...NORTH_RECIPES,
+  ...WEST_RECIPES,
+  ...SOUTH_RECIPES,
+  ...EAST_RECIPES,
+  ...CENTRAL_RECIPES,
+  ...NORTHEAST_RECIPES,
+];
+
 export function getRecipeById(id: string): Recipe | undefined {
   return RECIPES.find((r) => r.id === id);
 }
@@ -668,6 +687,7 @@ export function filterRecipes(params: {
     if (params.dietType === "egg" && r.dietType === "nonveg") return false;
     if (params.mealType && !r.mealType.includes(params.mealType as never)) return false;
     if (params.goalTags?.length && !params.goalTags.some((g) => r.goalTags.includes(g as never))) return false;
+    if (params.state && !r.cuisineRegion.includes(params.state) && !r.cuisineRegion.includes("Pan-India")) return false;
     if (params.excludeIds?.includes(r.id)) return false;
     return true;
   });

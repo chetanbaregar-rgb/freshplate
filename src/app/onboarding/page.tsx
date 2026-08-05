@@ -2,7 +2,7 @@
 import { useState } from "react";
 import { useRouter } from "next/navigation";
 import { motion, AnimatePresence } from "framer-motion";
-import { ChefHat, ArrowRight, ArrowLeft, Plus, Trash2, Check } from "lucide-react";
+import { ChefHat, ArrowRight, ArrowLeft, Plus, Trash2, Check, Loader2 } from "lucide-react";
 import { useAppStore } from "@/lib/store";
 import { INDIAN_STATES, GOAL_LABELS, DIET_LABELS } from "@/lib/utils";
 import type { Member, DietType, HealthGoal, Gender, ActivityLevel } from "@/lib/types";
@@ -35,6 +35,7 @@ export default function OnboardingPage() {
 
   // Step 5: location
   const [address, setAddress] = useState("");
+  const [generating, setGenerating] = useState(false);
 
   const go = (delta: number) => {
     setDir(delta);
@@ -57,7 +58,7 @@ export default function OnboardingPage() {
     setEditingMember({ name: "", age: 30, gender: "female", healthGoal: "maintenance", activityLevel: "moderate", allergies: [], dislikes: [] });
   };
 
-  const handleFinish = () => {
+  const handleFinish = async () => {
     const hh = {
       id: `hh-${Date.now()}`,
       name: `${members[0]?.name ?? "My"}'s Family`,
@@ -79,8 +80,13 @@ export default function OnboardingPage() {
       onboardingComplete: false,
     };
     setHousehold(hh);
-    completeOnboarding();
-    router.push("/calendar");
+    setGenerating(true);
+    try {
+      await completeOnboarding();
+      router.push("/calendar");
+    } finally {
+      setGenerating(false);
+    }
   };
 
   return (
@@ -322,9 +328,14 @@ export default function OnboardingPage() {
         ) : (
           <button
             onClick={handleFinish}
-            className="flex-1 flex items-center justify-center gap-2 bg-brand-500 text-white px-6 py-3.5 rounded-xl text-sm font-semibold hover:bg-brand-600 transition-colors"
+            disabled={generating}
+            className="flex-1 flex items-center justify-center gap-2 bg-brand-500 text-white px-6 py-3.5 rounded-xl text-sm font-semibold hover:bg-brand-600 disabled:opacity-60 transition-colors"
           >
-            Generate My Plan <ArrowRight className="w-4 h-4" />
+            {generating ? (
+              <><Loader2 className="w-4 h-4 animate-spin" /> Checking availability & generating…</>
+            ) : (
+              <>Generate My Plan <ArrowRight className="w-4 h-4" /></>
+            )}
           </button>
         )}
       </div>

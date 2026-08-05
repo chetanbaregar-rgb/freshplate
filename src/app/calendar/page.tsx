@@ -9,13 +9,14 @@ import { RefreshCw, Lock, Unlock, ShoppingCart, ChevronRight, Clock, Flame, X, C
 import { format, startOfWeek, addDays } from "date-fns";
 import { toast } from "sonner";
 
-const MEAL_TYPES = ["breakfast", "lunch", "dinner"] as const;
+const MEAL_TYPES = ["breakfast", "lunch", "snack", "dinner"] as const;
 
 export default function CalendarPage() {
   const { weeklyPlan, household, generateWeeklyPlan, swapMeal, lockMeal, toggleOrderIn, buildShoppingList, markMealCooked } = useAppStore();
   const [selectedDay, setSelectedDay] = useState(0);
   const [swapTarget, setSwapTarget] = useState<{ day: number; mealType: string } | null>(null);
   const [detailMeal, setDetailMeal] = useState<{ day: number; mealType: string } | null>(null);
+  const [regenerating, setRegenerating] = useState(false);
 
   const weekStart = weeklyPlan?.weekStart ? new Date(weeklyPlan.weekStart) : startOfWeek(new Date(), { weekStartsOn: 1 });
 
@@ -29,9 +30,14 @@ export default function CalendarPage() {
     );
   }
 
-  const handleRegenerate = () => {
-    generateWeeklyPlan();
-    toast.success("New weekly plan generated!");
+  const handleRegenerate = async () => {
+    setRegenerating(true);
+    try {
+      await generateWeeklyPlan();
+      toast.success("New weekly plan generated!");
+    } finally {
+      setRegenerating(false);
+    }
   };
 
   const handleBuildList = () => {
@@ -78,9 +84,10 @@ export default function CalendarPage() {
           <div className="flex items-center gap-2">
             <button
               onClick={handleRegenerate}
-              className="flex items-center gap-1.5 text-xs font-medium text-gray-500 hover:text-brand-600 border border-gray-200 rounded-xl px-3 py-2"
+              disabled={regenerating}
+              className="flex items-center gap-1.5 text-xs font-medium text-gray-500 hover:text-brand-600 border border-gray-200 rounded-xl px-3 py-2 disabled:opacity-50"
             >
-              <RefreshCw className="w-3.5 h-3.5" /> Regenerate
+              <RefreshCw className={cn("w-3.5 h-3.5", regenerating && "animate-spin")} /> {regenerating ? "Regenerating…" : "Regenerate"}
             </button>
             <button
               onClick={handleBuildList}
@@ -255,6 +262,7 @@ function MealCard({
   const mealColors: Record<string, string> = {
     breakfast: "bg-amber-50 border-amber-100",
     lunch: "bg-sage-50 border-sage-100",
+    snack: "bg-purple-50 border-purple-100",
     dinner: "bg-blue-50 border-blue-100",
   };
 
