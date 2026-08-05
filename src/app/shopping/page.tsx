@@ -2,9 +2,10 @@
 import { useEffect, useState } from "react";
 import { useAppStore } from "@/lib/store";
 import AppShell from "@/components/layout/AppShell";
-import { ShoppingCart, Package, Check, Zap, RefreshCw, ChevronDown, ChevronUp } from "lucide-react";
+import { ShoppingCart, Package, Check, Zap, RefreshCw, ChevronDown, ChevronUp, AlertTriangle } from "lucide-react";
 import { cn, formatCurrency } from "@/lib/utils";
 import { toast } from "sonner";
+import { useCommerceStatus } from "@/lib/mcp/useCommerceStatus";
 import type { ShoppingItem } from "@/lib/types";
 
 const CATEGORY_LABELS: Record<string, string> = {
@@ -19,11 +20,18 @@ const CATEGORY_LABELS: Record<string, string> = {
 };
 
 export default function ShoppingPage() {
-  const { shoppingList, buildShoppingList, toggleShoppingItem, placeOrder, weeklyPlan } = useAppStore();
+  const { shoppingList, buildShoppingList, toggleShoppingItem, refreshAvailability, placeOrder, weeklyPlan } =
+    useAppStore();
   const [platform, setPlatform] = useState<"zepto" | "instamart">("instamart");
   const [collapsedCategories, setCollapsedCategories] = useState<Set<string>>(new Set());
   const [ordering, setOrdering] = useState(false);
   const [ordered, setOrdered] = useState(false);
+  const [showConfirm, setShowConfirm] = useState(false);
+  const { status } = useCommerceStatus();
+
+  const isLive = status[platform].connected;
+  const addressId = status[platform].addressId;
+  const addressLabel = status[platform].addressLabel;
 
   useEffect(() => {
     if (shoppingList.length === 0 && weeklyPlan) {
@@ -31,6 +39,11 @@ export default function ShoppingPage() {
     }
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [weeklyPlan?.id]);
+
+  useEffect(() => {
+    if (weeklyPlan) refreshAvailability(platform);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [platform, weeklyPlan?.id]);
 
   const grouped = shoppingList.reduce<Record<string, ShoppingItem[]>>((acc, item) => {
     const cat = item.category;
@@ -51,13 +64,35 @@ export default function ShoppingPage() {
     });
   };
 
-  const handleOrder = async () => {
+  const platformName = platform === "instamart" ? "Swiggy Instamart" : "Zepto";
+
+  const handleOrderClick = () => {
+    if (isLive) {
+      if (!addressId) {
+        toast.error(`Pick a delivery address for ${platformName} in Profile first.`);
+        return;
+      }
+      setShowConfirm(true);
+    } else {
+      void confirmOrder();
+    }
+  };
+
+  const confirmOrder = async () => {
+    setShowConfirm(false);
     setOrdering(true);
-    await new Promise((r) => setTimeout(r, 1500));
-    placeOrder(platform);
-    setOrdering(false);
-    setOrdered(true);
-    toast.success(`Order placed on ${platform === "instamart" ? "Swiggy Instamart" : "Zepto"}! Delivery in ~25 min.`);
+    try {
+      if (!isLive) await new Promise((r) => setTimeout(r, 1200)); // keep the demo's simulated feel
+      await placeOrder(platform, addressId ?? undefined);
+      setOrdered(true);
+      toast.success(
+        isLive ? `Real order placed on ${platformName}!` : `Demo order placed on ${platformName}! Delivery in ~25 min.`
+      );
+    } catch (err) {
+      toast.error((err as Error).message || "Order failed — please try again.");
+    } finally {
+      setOrdering(false);
+    }
   };
 
   if (!weeklyPlan) {
@@ -83,7 +118,12 @@ export default function ShoppingPage() {
             </p>
           </div>
           <button
-            onClick={() => { buildShoppingList(); setOrdered(false); toast.success("List refreshed!"); }}
+            onClick={() => {
+              buildShoppingList();
+              refreshAvailability(platform);
+              setOrdered(false);
+              toast.success("List refreshed!");
+            }}
             className="flex items-center gap-1.5 text-xs border border-gray-200 rounded-xl px-3 py-2 text-gray-500 hover:text-brand-600"
           >
             <RefreshCw className="w-3.5 h-3.5" /> Refresh
@@ -111,6 +151,13 @@ export default function ShoppingPage() {
             </button>
           ))}
         </div>
+        <p className="text-[11px] mt-1.5">
+          {isLive ? (
+            <span className="text-green-700 font-medium">● Live pricing{addressLabel ? ` · ${addressLabel}` : ""}</span>
+          ) : (
+            <span className="text-gray-400">● Demo pricing — connect {platformName} in Profile for live data</span>
+          )}
+        </p>
       </div>
 
       <div className="flex-1 overflow-auto p-4 lg:px-8 space-y-3 pb-32">
@@ -200,7 +247,7 @@ export default function ShoppingPage() {
               </div>
             ) : (
               <button
-                onClick={handleOrder}
+                onClick={handleOrderClick}
                 disabled={ordering}
                 className="flex items-center gap-2 bg-brand-500 text-white px-5 py-3 rounded-xl text-sm font-semibold hover:bg-brand-600 disabled:opacity-60 transition-colors"
               >
@@ -211,6 +258,51 @@ export default function ShoppingPage() {
                 )}
               </button>
             )}
+          </div>
+        </div>
+      )}
+
+      {/* Binding-order confirmation — only shown for live (real, paid) checkout */}
+      {showConfirm && (
+        <div className="fixed inset-0 z-50 flex items-end lg:items-center justify-center">
+          <div className="absolute inset-0 bg-black/40 backdrop-blur-sm" onClick={() => setShowConfirm(false)} />
+          <div className="relative bg-white w-full lg:max-w-md rounded-t-3xl lg:rounded-3xl p-6 z-10 space-y-4">
+            <div className="flex items-center gap-2 text-amber-600">
+              <AlertTriangle className="w-5 h-5" />
+              <h3 className="text-base font-bold text-gray-900">Confirm real order</h3>
+            </div>
+            <p className="text-sm text-muted-foreground">
+              This places a real, binding order on your connected {platformName} account — payment and delivery
+              happen for real, not a demo.
+            </p>
+            <div className="bg-gray-50 rounded-xl p-3 text-sm space-y-1.5">
+              <div className="flex justify-between">
+                <span className="text-muted-foreground">Deliver to</span>
+                <span className="font-medium">{addressLabel ?? "—"}</span>
+              </div>
+              <div className="flex justify-between">
+                <span className="text-muted-foreground">Items</span>
+                <span className="font-medium">{unchecked.length}</span>
+              </div>
+              <div className="flex justify-between">
+                <span className="text-muted-foreground">Est. total</span>
+                <span className="font-medium">{formatCurrency(totalEstimate)}</span>
+              </div>
+            </div>
+            <div className="flex gap-3">
+              <button
+                onClick={() => setShowConfirm(false)}
+                className="flex-1 py-3 rounded-xl border border-gray-200 text-sm font-medium hover:bg-gray-50"
+              >
+                Cancel
+              </button>
+              <button
+                onClick={confirmOrder}
+                className="flex-1 py-3 rounded-xl bg-brand-500 text-white text-sm font-semibold hover:bg-brand-600"
+              >
+                Place real order
+              </button>
+            </div>
           </div>
         </div>
       )}

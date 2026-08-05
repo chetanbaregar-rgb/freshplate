@@ -104,6 +104,10 @@ export interface ShoppingItem {
   packSize?: string;
   available?: boolean;
   checked: boolean;
+  /** Opaque platform-specific identifiers (Zepto: productVariantId/storeProductId,
+   *  Instamart: spinId/skuId) needed to add this exact item to cart — populated
+   *  by refreshAvailability() once a live platform search has matched it. */
+  platformRef?: Record<string, unknown>;
 }
 
 export interface PantryItem {

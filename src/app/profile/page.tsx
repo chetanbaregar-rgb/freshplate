@@ -1,5 +1,5 @@
 "use client";
-import { useState } from "react";
+import { useEffect, useState } from "react";
 import { useRouter } from "next/navigation";
 import { useAppStore } from "@/lib/store";
 import AppShell from "@/components/layout/AppShell";
@@ -8,12 +8,35 @@ import { goalColor, computeTarget } from "@/lib/nutrition";
 import { User, Plus, Trash2, ChevronRight, Zap, Package, RotateCcw, X } from "lucide-react";
 import { cn } from "@/lib/utils";
 import { toast } from "sonner";
-import type { Member, DietType, HealthGoal, Gender, ActivityLevel } from "@/lib/types";
+import { useCommerceStatus } from "@/lib/mcp/useCommerceStatus";
+import { LiveCommerceAdapter, type AddressOption } from "@/lib/mcp/adapter";
+import type { Member, DietType, HealthGoal, Gender, ActivityLevel, Platform } from "@/lib/types";
 
 export default function ProfilePage() {
   const router = useRouter();
   const { household, addMember, removeMember, updateHousehold, generateWeeklyPlan } = useAppStore();
   const [showAddMember, setShowAddMember] = useState(false);
+  const { status, loading: statusLoading, disconnect, refresh: refreshStatus } = useCommerceStatus();
+  const [disconnecting, setDisconnecting] = useState<Platform | null>(null);
+
+  // Read the OAuth callback's redirect params directly (not useSearchParams(),
+  // to avoid forcing this page out of static rendering into a Suspense boundary).
+  useEffect(() => {
+    const params = new URLSearchParams(window.location.search);
+    const connected = params.get("connected");
+    const error = params.get("connect_error");
+    if (connected) toast.success(`${connected === "zepto" ? "Zepto" : "Swiggy Instamart"} connected!`);
+    if (error) toast.error(`Connection failed: ${error}`);
+    if (connected || error) router.replace("/profile");
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
+
+  const handleDisconnect = async (platform: Platform) => {
+    setDisconnecting(platform);
+    await disconnect(platform);
+    setDisconnecting(null);
+    toast.success(`${platform === "zepto" ? "Zepto" : "Swiggy Instamart"} disconnected.`);
+  };
   const [newMember, setNewMember] = useState<Partial<Member>>({
     name: "", age: 25, gender: "female", healthGoal: "maintenance", activityLevel: "moderate", allergies: [], dislikes: [],
   });
@@ -130,18 +153,31 @@ export default function ProfilePage() {
             <PlatformRow
               icon={<Package className="w-4 h-4 text-orange-500" />}
               name="Swiggy Instamart"
-              status={household.connectedPlatforms.includes("instamart") ? "connected" : "demo"}
+              platform="instamart"
+              connected={status.instamart.connected}
+              addressLabel={status.instamart.addressLabel}
+              needsAddress={status.instamart.connected && !status.instamart.addressId}
+              loading={statusLoading || disconnecting === "instamart"}
+              onDisconnect={handleDisconnect}
+              onAddressSelected={refreshStatus}
               color="orange"
             />
             <PlatformRow
               icon={<Zap className="w-4 h-4 text-purple-500" />}
               name="Zepto"
-              status={household.connectedPlatforms.includes("zepto") ? "connected" : "demo"}
+              platform="zepto"
+              connected={status.zepto.connected}
+              addressLabel={status.zepto.addressLabel}
+              needsAddress={status.zepto.connected && !status.zepto.addressId}
+              loading={statusLoading || disconnecting === "zepto"}
+              onDisconnect={handleDisconnect}
+              onAddressSelected={refreshStatus}
               color="purple"
             />
           </div>
           <p className="text-xs text-muted-foreground mt-3">
-            Connect accounts for live pricing, availability, and 1-tap ordering. Currently running on demo data.
+            Connect accounts for live pricing, availability, and 1-tap ordering. Orders placed while
+            connected are real and binding — not a demo.
           </p>
         </Section>
 
@@ -257,20 +293,116 @@ function NutriBadge({ label, value, unit }: { label: string; value: string; unit
   );
 }
 
-function PlatformRow({ icon, name, status, color }: { icon: React.ReactNode; name: string; status: "connected" | "demo"; color: string }) {
+function PlatformRow({
+  icon,
+  name,
+  platform,
+  connected,
+  addressLabel,
+  needsAddress,
+  loading,
+  onDisconnect,
+  onAddressSelected,
+  color,
+}: {
+  icon: React.ReactNode;
+  name: string;
+  platform: Platform;
+  connected: boolean;
+  addressLabel: string | null;
+  needsAddress: boolean;
+  loading: boolean;
+  onDisconnect: (platform: Platform) => void;
+  onAddressSelected: () => void;
+  color: string;
+}) {
   return (
-    <div className="flex items-center gap-3">
-      <div className={cn("w-8 h-8 rounded-xl flex items-center justify-center", `bg-${color}-50`)}>{icon}</div>
-      <div className="flex-1">
-        <p className="text-sm font-medium">{name}</p>
-        <p className="text-xs text-muted-foreground">{status === "connected" ? "Connected" : "Demo mode"}</p>
+    <div>
+      <div className="flex items-center gap-3">
+        <div className={cn("w-8 h-8 rounded-xl flex items-center justify-center", `bg-${color}-50`)}>{icon}</div>
+        <div className="flex-1 min-w-0">
+          <p className="text-sm font-medium">{name}</p>
+          <p className="text-xs text-muted-foreground truncate">
+            {connected ? (addressLabel ? `Connected · ${addressLabel}` : "Connected · pick an address below") : "Demo mode"}
+          </p>
+        </div>
+        {connected ? (
+          <button
+            onClick={() => onDisconnect(platform)}
+            disabled={loading}
+            className="text-[11px] font-semibold px-3 py-1.5 rounded-full bg-green-100 text-green-700 hover:bg-red-100 hover:text-red-600 disabled:opacity-50 transition-colors"
+          >
+            {loading ? "…" : "Live · Disconnect"}
+          </button>
+        ) : (
+          <a
+            href={`/api/auth/${platform}/start`}
+            className="text-[11px] font-semibold px-3 py-1.5 rounded-full bg-gray-100 text-gray-600 hover:bg-brand-100 hover:text-brand-700 transition-colors"
+          >
+            Connect
+          </a>
+        )}
       </div>
-      <span className={cn(
-        "text-[10px] font-semibold px-2 py-1 rounded-full",
-        status === "connected" ? "bg-green-100 text-green-700" : "bg-gray-100 text-gray-500"
-      )}>
-        {status === "connected" ? "Live" : "Demo"}
-      </span>
+      {needsAddress && <AddressPicker platform={platform} onSelected={onAddressSelected} />}
+    </div>
+  );
+}
+
+function AddressPicker({ platform, onSelected }: { platform: Platform; onSelected: () => void }) {
+  const [addresses, setAddresses] = useState<AddressOption[] | null>(null);
+  const [selecting, setSelecting] = useState(false);
+
+  useEffect(() => {
+    let cancelled = false;
+    new LiveCommerceAdapter(platform)
+      .listAddresses()
+      .then((a) => !cancelled && setAddresses(a))
+      .catch(() => !cancelled && setAddresses([]));
+    return () => {
+      cancelled = true;
+    };
+  }, [platform]);
+
+  const handleSelect = async (addressId: string) => {
+    setSelecting(true);
+    try {
+      let coords: { lat: number; lng: number } | undefined;
+      // Instamart's get_addresses omits coordinates (privacy) but track_order
+      // needs them — grab them once here, best-effort, if the browser allows.
+      if (platform === "instamart" && "geolocation" in navigator) {
+        coords = await new Promise((resolve) => {
+          navigator.geolocation.getCurrentPosition(
+            (pos) => resolve({ lat: pos.coords.latitude, lng: pos.coords.longitude }),
+            () => resolve(undefined),
+            { timeout: 3000 }
+          );
+        });
+      }
+      await new LiveCommerceAdapter(platform).selectAddress(addressId, coords);
+      onSelected();
+    } finally {
+      setSelecting(false);
+    }
+  };
+
+  if (addresses === null) return <p className="text-xs text-muted-foreground pl-11 mt-1.5">Loading addresses…</p>;
+  if (addresses.length === 0) {
+    return <p className="text-xs text-muted-foreground pl-11 mt-1.5">No saved addresses found on this account.</p>;
+  }
+
+  return (
+    <div className="space-y-1.5 mt-2 pl-11">
+      {addresses.map((a) => (
+        <button
+          key={a.id}
+          disabled={selecting}
+          onClick={() => handleSelect(a.id)}
+          className="w-full text-left text-xs border border-gray-200 rounded-lg px-2.5 py-1.5 hover:border-brand-400 disabled:opacity-50 transition-colors"
+        >
+          <span className="font-medium">{a.label}</span>{" "}
+          <span className="text-muted-foreground">— {a.addressLine}</span>
+        </button>
+      ))}
     </div>
   );
 }

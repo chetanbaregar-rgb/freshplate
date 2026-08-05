@@ -1,4 +1,4 @@
-import type { Recipe } from "./types";
+import type { Recipe, Ingredient } from "./types";
 
 export const RECIPES: Recipe[] = [
   // BREAKFAST
@@ -637,6 +637,23 @@ export const RECIPES: Recipe[] = [
 
 export function getRecipeById(id: string): Recipe | undefined {
   return RECIPES.find((r) => r.id === id);
+}
+
+let ingredientIndex: Map<string, Ingredient> | null = null;
+
+/** Ingredient ids are only unique within a recipe (e.g. "onion", "onion2",
+ *  "onion3" across different recipes) — this looks up by that scoped id, not
+ *  by ingredient name, so pass the same id ShoppingItem.ingredientId carries. */
+export function getIngredientById(id: string): Ingredient | undefined {
+  if (!ingredientIndex) {
+    ingredientIndex = new Map();
+    for (const recipe of RECIPES) {
+      for (const ingredient of recipe.ingredients) {
+        if (!ingredientIndex.has(ingredient.id)) ingredientIndex.set(ingredient.id, ingredient);
+      }
+    }
+  }
+  return ingredientIndex.get(id);
 }
 
 export function filterRecipes(params: {

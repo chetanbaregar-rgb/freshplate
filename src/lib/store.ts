@@ -2,9 +2,10 @@
 import { create } from "zustand";
 import { persist } from "zustand/middleware";
 import type {
-  Household, Member, WeeklyPlan, PlanMeal, PantryItem, Order, ShoppingItem,
+  Household, Member, WeeklyPlan, PlanMeal, PantryItem, Order, ShoppingItem, Platform,
 } from "./types";
-import { RECIPES, filterRecipes } from "./recipes";
+import { RECIPES, filterRecipes, getIngredientById } from "./recipes";
+import { resolveAdapter } from "./mcp/adapter";
 import { startOfWeek, format } from "date-fns";
 
 interface AppState {
@@ -34,7 +35,11 @@ interface AppState {
   // Shopping actions
   buildShoppingList: () => void;
   toggleShoppingItem: (ingredientId: string) => void;
-  placeOrder: (platform: "zepto" | "instamart") => void;
+  /** Searches each shopping-list item on `platform` (live if connected, mock
+   *  otherwise) and fills in price/packSize/available/platformRef. Returns
+   *  whether it hit the live platform (vs. the demo fallback). */
+  refreshAvailability: (platform: Platform) => Promise<boolean>;
+  placeOrder: (platform: Platform, addressId?: string) => Promise<Order>;
 
   // Pantry actions
   addPantryItem: (item: Omit<PantryItem, "id" | "updatedAt">) => void;
@@ -225,22 +230,86 @@ export const useAppStore = create<AppState>()(
           ),
         })),
 
-      placeOrder: (platform) => {
+      refreshAvailability: async (platform) => {
         const { shoppingList } = get();
-        const items = shoppingList
-          .filter((i) => !i.checked)
-          .map((i) => ({ name: i.name, quantity: i.qtyToBuy, unit: i.unit, price: i.price ?? 50 }));
+        if (shoppingList.length === 0) return false;
+        const { adapter, live } = await resolveAdapter(platform);
 
+        const updated = await Promise.all(
+          shoppingList.map(async (item) => {
+            const ingredient = getIngredientById(item.ingredientId);
+            const query = ingredient?.searchTerms[platform] ?? item.name;
+            try {
+              const results = await adapter.searchProducts(query);
+              const best = results.find((r) => r.available) ?? results[0];
+              if (!best) return { ...item, platform, available: false };
+              return {
+                ...item,
+                platform,
+                price: best.price,
+                packSize: best.packSize,
+                available: best.available,
+                platformRef: best.platformRef,
+              };
+            } catch {
+              return item; // keep prior state for this item rather than failing the whole refresh
+            }
+          })
+        );
+        set({ shoppingList: updated });
+        return live;
+      },
+
+      placeOrder: async (platform, addressId) => {
+        const { shoppingList, weeklyPlan } = get();
+        const unchecked = shoppingList.filter((i) => !i.checked && i.qtyToBuy > 0);
+        const { adapter, live } = await resolveAdapter(platform);
+
+        if (live) {
+          if (!addressId) throw new Error("A delivery address is required to place a live order.");
+          // NOTE: quantities are rounded to whole units here — there's no
+          // pack-size-aware buying yet (e.g. "need 600g" -> "2x 500g pack"),
+          // a known simplification called out in the PRD (FR-4.2).
+          const lines = unchecked
+            .filter((i) => i.platformRef)
+            .map((i) => ({
+              quantity: Math.max(1, Math.ceil(i.qtyToBuy)),
+              platformRef: i.platformRef!,
+              name: i.name,
+              price: i.price,
+              packSize: i.packSize,
+            }));
+          if (lines.length === 0) {
+            throw new Error("No items have live pricing yet — refresh availability before ordering.");
+          }
+          await adapter.updateCart(lines);
+          const result = await adapter.checkout(addressId);
+          const order: Order = {
+            id: result.id,
+            platform,
+            planId: weeklyPlan?.id ?? "",
+            items: unchecked.map((i) => ({ name: i.name, quantity: i.qtyToBuy, unit: i.unit, price: i.price ?? 0 })),
+            status: "placed",
+            placedAt: result.placedAt,
+            totalAmount: result.totalAmount ?? unchecked.reduce((s, i) => s + (i.price ?? 0) * i.qtyToBuy, 0),
+          };
+          set((s) => ({ orders: [order, ...s.orders] }));
+          return order;
+        }
+
+        // Demo fallback — no connected account for this platform.
+        const items = unchecked.map((i) => ({ name: i.name, quantity: i.qtyToBuy, unit: i.unit, price: i.price ?? 50 }));
         const order: Order = {
-          id: `ORD-${Date.now()}`,
+          id: `DEMO-${Date.now()}`,
           platform,
-          planId: get().weeklyPlan?.id ?? "",
+          planId: weeklyPlan?.id ?? "",
           items,
           status: "placed",
           placedAt: new Date().toISOString(),
           totalAmount: items.reduce((s, i) => s + i.price * i.quantity, 0),
         };
         set((s) => ({ orders: [order, ...s.orders] }));
+        return order;
       },
 
       addPantryItem: (item) =>
