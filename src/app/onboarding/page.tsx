@@ -1,8 +1,9 @@
 "use client";
-import { useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import { useRouter } from "next/navigation";
 import { motion, AnimatePresence } from "framer-motion";
 import { ChefHat, ArrowRight, ArrowLeft, Plus, Trash2, Check, Loader2 } from "lucide-react";
+import { toast } from "sonner";
 import { useAppStore } from "@/lib/store";
 import { INDIAN_STATES, GOAL_LABELS, DIET_LABELS } from "@/lib/utils";
 import type { Member, DietType, HealthGoal, Gender, ActivityLevel } from "@/lib/types";
@@ -17,7 +18,7 @@ const slide = {
 
 export default function OnboardingPage() {
   const router = useRouter();
-  const { setHousehold, completeOnboarding } = useAppStore();
+  const { setHousehold, completeOnboarding, setOnboardingStep } = useAppStore();
   const [step, setStep] = useState(0);
   const [dir, setDir] = useState(1);
 
@@ -32,15 +33,76 @@ export default function OnboardingPage() {
     name: "", age: 30, gender: "female", healthGoal: "maintenance",
     activityLevel: "moderate", allergies: [], dislikes: [],
   });
+  // Kept as raw text (not parsed into arrays on every keystroke) so typing
+  // "peanuts, tree nuts" doesn't fight a join/split re-render mid-word.
+  const [allergiesText, setAllergiesText] = useState("");
+  const [dislikesText, setDislikesText] = useState("");
 
   // Step 5: location
   const [address, setAddress] = useState("");
   const [generating, setGenerating] = useState(false);
 
+  // Stable id for the in-progress household draft, so repeatedly writing the
+  // draft to the store as the user types doesn't spawn a fresh id each time.
+  // Reused as the final household's id in handleFinish() too.
+  const householdIdRef = useRef<string>(`hh-${Date.now()}`);
+
+  // Resume an in-progress draft after a refresh: read whatever was last
+  // persisted to the store instead of always starting blank. Runs once,
+  // client-side, after mount — never on the server-rendered blank wizard —
+  // so it can't cause a hydration mismatch; the resumed values simply pop in
+  // right after mount.
+  useEffect(() => {
+    const { household: existing, onboardingStep: existingStep } = useAppStore.getState();
+    if (existing) {
+      householdIdRef.current = existing.id;
+      setState(existing.state);
+      setStateOfOrigin(existing.stateOfOrigin ?? "");
+      setDietType(existing.dietType);
+      setMembers(existing.members);
+      setAddress(existing.deliveryAddress ?? "");
+    }
+    if (typeof existingStep === "number") setStep(existingStep);
+    // Intentionally run only once, on mount, to resume from whatever was
+    // last persisted — not on every store change.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
+
+  // Persist step progress so a refresh resumes on the same step.
+  useEffect(() => {
+    setOnboardingStep(step);
+  }, [step, setOnboardingStep]);
+
+  // Persist the draft household as the user fills the wizard in — this is
+  // what actually survives a refresh mid-flow (e.g. after adding 2 of 3
+  // members, before ever clicking Continue). `household` is already in the
+  // store's persist() allowlist, unlike this page's own local state.
+  // `onboardingComplete` stays false here so a resumed-but-unfinished
+  // household is never mistaken for a finished one by other pages (see
+  // src/app/page.tsx's redirect, which sends anything with
+  // onboardingComplete !== true back to /onboarding — exactly where we are).
+  useEffect(() => {
+    if (!state && !stateOfOrigin && members.length === 0 && !address) return;
+    setHousehold({
+      id: householdIdRef.current,
+      name: `${members[0]?.name ?? "My"}'s Family`,
+      state,
+      stateOfOrigin: stateOfOrigin || undefined,
+      dietType,
+      members,
+      deliveryAddress: address,
+      connectedPlatforms: [],
+      onboardingComplete: false,
+    });
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [state, stateOfOrigin, dietType, members, address]);
+
   const go = (delta: number) => {
     setDir(delta);
     setStep((s) => s + delta);
   };
+
+  const parseCsv = (text: string) => text.split(",").map((s) => s.trim()).filter(Boolean);
 
   const handleAddMember = () => {
     if (!editingMember.name || !editingMember.age) return;
@@ -49,18 +111,22 @@ export default function OnboardingPage() {
       name: editingMember.name!,
       age: editingMember.age!,
       gender: (editingMember.gender ?? "female") as Gender,
+      weightKg: editingMember.weightKg,
+      heightCm: editingMember.heightCm,
       healthGoal: (editingMember.healthGoal ?? "maintenance") as HealthGoal,
       activityLevel: (editingMember.activityLevel ?? "moderate") as ActivityLevel,
-      allergies: [],
-      dislikes: [],
+      allergies: parseCsv(allergiesText),
+      dislikes: parseCsv(dislikesText),
     };
     setMembers((prev) => [...prev, m]);
     setEditingMember({ name: "", age: 30, gender: "female", healthGoal: "maintenance", activityLevel: "moderate", allergies: [], dislikes: [] });
+    setAllergiesText("");
+    setDislikesText("");
   };
 
   const handleFinish = async () => {
     const hh = {
-      id: `hh-${Date.now()}`,
+      id: householdIdRef.current,
       name: `${members[0]?.name ?? "My"}'s Family`,
       state,
       stateOfOrigin: stateOfOrigin || undefined,
@@ -84,6 +150,10 @@ export default function OnboardingPage() {
     try {
       await completeOnboarding();
       router.push("/calendar");
+    } catch (err) {
+      console.error("Failed to generate weekly plan during onboarding:", err);
+      toast.error("We couldn't generate your plan. Please check your connection and try again.");
+      // Stay on this step (no navigation) so the user can retry.
     } finally {
       setGenerating(false);
     }
@@ -166,7 +236,7 @@ export default function OnboardingPage() {
                         <p className="text-sm font-medium truncate">{m.name}</p>
                         <p className="text-xs text-muted-foreground">{m.age}y · {m.gender} · {GOAL_LABELS[m.healthGoal]}</p>
                       </div>
-                      <button onClick={() => setMembers((p) => p.filter((x) => x.id !== m.id))}>
+                      <button onClick={() => setMembers((p) => p.filter((x) => x.id !== m.id))} aria-label={`Remove ${m.name}`}>
                         <Trash2 className="w-4 h-4 text-gray-400 hover:text-red-500" />
                       </button>
                     </div>
@@ -179,6 +249,7 @@ export default function OnboardingPage() {
                 <div className="grid grid-cols-2 gap-3">
                   <input
                     placeholder="Name"
+                    aria-label="Name"
                     value={editingMember.name ?? ""}
                     onChange={(e) => setEditingMember((p) => ({ ...p, name: e.target.value }))}
                     className="border border-gray-200 rounded-xl p-3 text-sm focus:outline-none focus:ring-2 focus:ring-brand-400"
@@ -186,6 +257,7 @@ export default function OnboardingPage() {
                   <input
                     type="number"
                     placeholder="Age"
+                    aria-label="Age"
                     value={editingMember.age ?? ""}
                     onChange={(e) => setEditingMember((p) => ({ ...p, age: Number(e.target.value) }))}
                     className="border border-gray-200 rounded-xl p-3 text-sm focus:outline-none focus:ring-2 focus:ring-brand-400"
@@ -195,6 +267,7 @@ export default function OnboardingPage() {
                   <select
                     value={editingMember.gender ?? "female"}
                     onChange={(e) => setEditingMember((p) => ({ ...p, gender: e.target.value as Gender }))}
+                    aria-label="Gender"
                     className="border border-gray-200 rounded-xl p-3 text-sm focus:outline-none focus:ring-2 focus:ring-brand-400"
                   >
                     <option value="female">Female</option>
@@ -204,6 +277,7 @@ export default function OnboardingPage() {
                   <select
                     value={editingMember.activityLevel ?? "moderate"}
                     onChange={(e) => setEditingMember((p) => ({ ...p, activityLevel: e.target.value as ActivityLevel }))}
+                    aria-label="Activity level"
                     className="border border-gray-200 rounded-xl p-3 text-sm focus:outline-none focus:ring-2 focus:ring-brand-400"
                   >
                     <option value="sedentary">Sedentary</option>
@@ -214,10 +288,45 @@ export default function OnboardingPage() {
                 <select
                   value={editingMember.healthGoal ?? "maintenance"}
                   onChange={(e) => setEditingMember((p) => ({ ...p, healthGoal: e.target.value as HealthGoal }))}
+                  aria-label="Health goal"
                   className="w-full border border-gray-200 rounded-xl p-3 text-sm focus:outline-none focus:ring-2 focus:ring-brand-400"
                 >
                   {Object.entries(GOAL_LABELS).map(([v, l]) => <option key={v} value={v}>{l}</option>)}
                 </select>
+                <div className="grid grid-cols-2 gap-3">
+                  <input
+                    type="number"
+                    placeholder="Weight (kg, optional)"
+                    aria-label="Weight in kilograms, optional"
+                    value={editingMember.weightKg ?? ""}
+                    onChange={(e) => setEditingMember((p) => ({ ...p, weightKg: e.target.value ? Number(e.target.value) : undefined }))}
+                    className="border border-gray-200 rounded-xl p-3 text-sm focus:outline-none focus:ring-2 focus:ring-brand-400"
+                  />
+                  <input
+                    type="number"
+                    placeholder="Height (cm, optional)"
+                    aria-label="Height in centimeters, optional"
+                    value={editingMember.heightCm ?? ""}
+                    onChange={(e) => setEditingMember((p) => ({ ...p, heightCm: e.target.value ? Number(e.target.value) : undefined }))}
+                    className="border border-gray-200 rounded-xl p-3 text-sm focus:outline-none focus:ring-2 focus:ring-brand-400"
+                  />
+                </div>
+                <p className="text-[11px] text-muted-foreground -mb-1">Used for accurate calorie/protein targets — skip and we&apos;ll estimate.</p>
+                <input
+                  placeholder="Allergies (comma-separated, optional)"
+                  aria-label="Allergies, comma-separated, optional"
+                  value={allergiesText}
+                  onChange={(e) => setAllergiesText(e.target.value)}
+                  className="w-full border border-gray-200 rounded-xl p-3 text-sm focus:outline-none focus:ring-2 focus:ring-brand-400"
+                />
+                <input
+                  placeholder="Dislikes (comma-separated, optional)"
+                  aria-label="Dislikes, comma-separated, optional"
+                  value={dislikesText}
+                  onChange={(e) => setDislikesText(e.target.value)}
+                  className="w-full border border-gray-200 rounded-xl p-3 text-sm focus:outline-none focus:ring-2 focus:ring-brand-400"
+                />
+                <p className="text-[11px] text-muted-foreground -mt-1">We&apos;ll never suggest a recipe containing these for anyone in the household.</p>
                 <button
                   onClick={handleAddMember}
                   disabled={!editingMember.name}
@@ -261,7 +370,7 @@ export default function OnboardingPage() {
 
           {step === 3 && (
             <StepWrapper key="s3" dir={dir}>
-              <StepTitle title="Delivery address" subtitle="FreshPlate checks ingredient availability at your location on Zepto and Swiggy Instamart." />
+              <StepTitle title="Delivery address" subtitle="Once you connect Zepto or Swiggy Instamart in the app, FreshPlate checks live ingredient availability at your location before building each week's plan." />
               <div className="space-y-4">
                 <div>
                   <label className="block text-sm font-medium mb-2">Address / Area</label>

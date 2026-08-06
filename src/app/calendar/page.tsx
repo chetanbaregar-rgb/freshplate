@@ -1,26 +1,52 @@
 "use client";
-import { useState } from "react";
+import { useEffect, useState } from "react";
+import { useRouter } from "next/navigation";
 import { useAppStore } from "@/lib/store";
-import { getRecipeById, filterRecipes } from "@/lib/recipes";
+import { getRecipeById, filterRecipes, effectiveDietType, excludedIngredientTerms, householdGoals } from "@/lib/recipes";
 import { DAYS, DAYS_FULL, MEAL_LABELS } from "@/lib/utils";
 import { cn } from "@/lib/utils";
 import AppShell from "@/components/layout/AppShell";
-import { RefreshCw, Lock, Unlock, ShoppingCart, ChevronRight, Clock, Flame, X, Check } from "lucide-react";
+import { RefreshCw, Lock, Unlock, ShoppingCart, ChevronRight, Clock, Flame, X, Check, ChefHat, Zap } from "lucide-react";
 import { format, startOfWeek, addDays } from "date-fns";
 import { toast } from "sonner";
+import Link from "next/link";
+import { useCommerceStatus } from "@/lib/mcp/useCommerceStatus";
 
 const MEAL_TYPES = ["breakfast", "lunch", "snack", "dinner"] as const;
 
 export default function CalendarPage() {
+  const router = useRouter();
   const { weeklyPlan, household, generateWeeklyPlan, swapMeal, lockMeal, toggleOrderIn, buildShoppingList, markMealCooked } = useAppStore();
   const [selectedDay, setSelectedDay] = useState(0);
   const [swapTarget, setSwapTarget] = useState<{ day: number; mealType: string } | null>(null);
   const [detailMeal, setDetailMeal] = useState<{ day: number; mealType: string } | null>(null);
   const [regenerating, setRegenerating] = useState(false);
+  const { status: commerceStatus, loading: commerceStatusLoading } = useCommerceStatus();
+  const noPlatformConnected = !commerceStatusLoading && !commerceStatus.zepto.connected && !commerceStatus.instamart.connected;
 
   const weekStart = weeklyPlan?.weekStart ? new Date(weeklyPlan.weekStart) : startOfWeek(new Date(), { weekStartsOn: 1 });
 
-  if (!household || !weeklyPlan) {
+  // Deep-linking here without completing onboarding leaves household null
+  // (or incomplete) — bounce to onboarding instead of showing an indefinite loader.
+  useEffect(() => {
+    if (!household?.onboardingComplete) {
+      router.replace("/onboarding");
+    }
+  }, [household, router]);
+
+  if (!household?.onboardingComplete) {
+    return (
+      <div className="flex min-h-screen flex-col items-center justify-center bg-[rgb(252,249,245)] gap-4">
+        <div className="relative w-12 h-12 flex items-center justify-center">
+          <span className="absolute inset-0 rounded-2xl border-4 border-brand-100 border-t-brand-500 animate-spin" />
+          <ChefHat className="w-5 h-5 text-brand-500" />
+        </div>
+        <p className="text-xs font-medium text-muted-foreground animate-pulse">Redirecting…</p>
+      </div>
+    );
+  }
+
+  if (!weeklyPlan) {
     return (
       <AppShell>
         <div className="flex items-center justify-center h-screen text-muted-foreground">
@@ -54,9 +80,10 @@ export default function CalendarPage() {
 
   const swapCandidates = swapTarget
     ? filterRecipes({
-        dietType: household.dietType,
+        dietType: effectiveDietType(household),
         mealType: swapTarget.mealType,
-        goalTags: [household.members[0]?.healthGoal ?? "maintenance"],
+        goalTags: householdGoals(household),
+        excludeIngredientTerms: excludedIngredientTerms(household),
         excludeIds: [
           weeklyPlan.meals.find(
             (m) => m.day === swapTarget.day && m.mealType === swapTarget.mealType
@@ -122,6 +149,17 @@ export default function CalendarPage() {
             );
           })}
         </div>
+
+        {noPlatformConnected && (
+          <Link
+            href="/profile"
+            className="mt-3 flex items-center gap-2 bg-amber-50 border border-amber-200 rounded-xl px-3 py-2 text-xs text-amber-800 hover:bg-amber-100 transition-colors"
+          >
+            <Zap className="w-3.5 h-3.5 flex-shrink-0" />
+            <span className="flex-1">Connect Zepto or Instamart to make this plan availability-aware, not just diet-aware.</span>
+            <ChevronRight className="w-3.5 h-3.5 flex-shrink-0" />
+          </Link>
+        )}
       </div>
 
       {/* Desktop: 7-column grid; Mobile: single day */}
@@ -275,7 +313,7 @@ function MealCard({
             <p className="text-sm font-medium text-blue-700">🛵 Order In</p>
             <p className="text-xs text-blue-500">via Swiggy</p>
           </div>
-          <button onClick={onOrderIn} className="text-xs text-gray-400 hover:text-gray-600"><X className="w-3.5 h-3.5" /></button>
+          <button onClick={onOrderIn} aria-label={`Cancel order-in for ${MEAL_LABELS[mealType]}`} className="text-xs text-gray-400 hover:text-gray-600"><X className="w-3.5 h-3.5" /></button>
         </div>
       </div>
     );
@@ -357,7 +395,7 @@ function BottomSheet({ title, children, onClose }: { title: string; children: Re
       <div className="relative bg-white w-full lg:max-w-lg rounded-t-3xl lg:rounded-3xl p-6 max-h-[85vh] flex flex-col z-10">
         <div className="flex items-center justify-between mb-4">
           <h3 className="text-base font-bold">{title}</h3>
-          <button onClick={onClose} className="w-7 h-7 bg-gray-100 rounded-full flex items-center justify-center">
+          <button onClick={onClose} aria-label="Close" className="w-7 h-7 bg-gray-100 rounded-full flex items-center justify-center">
             <X className="w-4 h-4" />
           </button>
         </div>

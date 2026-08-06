@@ -32,7 +32,7 @@ export interface CommerceAdapter {
   getCart(): Promise<Cart>;
   updateCart(lines: CartLineInput[]): Promise<Cart>;
   clearCart(): Promise<void>;
-  checkout(addressId: string, riderTip?: number): Promise<PlatformOrderResult>;
+  checkout(addressId: string, riderTip?: number, idempotencyKey?: string): Promise<PlatformOrderResult>;
   trackOrder(orderId: string): Promise<TrackingInfo>;
   getOrderHistory(): Promise<PlatformOrderResult[]>;
   getFrequentItems(): Promise<ProductResult[]>;
@@ -89,8 +89,8 @@ export class LiveCommerceAdapter implements CommerceAdapter {
   clearCart() {
     return this.call<{ ok: true }>("cart.clear").then(() => undefined);
   }
-  checkout(addressId: string, riderTip?: number) {
-    return this.call<{ order: PlatformOrderResult }>("checkout", { addressId, riderTip }).then((r) => r.order);
+  checkout(addressId: string, riderTip?: number, idempotencyKey?: string) {
+    return this.call<{ order: PlatformOrderResult }>("checkout", { addressId, riderTip, idempotencyKey }).then((r) => r.order);
   }
   trackOrder(orderId: string) {
     return this.call<{ tracking: TrackingInfo }>("orders.track", { orderId }).then((r) => r.tracking);
@@ -114,6 +114,12 @@ const MOCK_PRODUCTS: Record<string, { name: string; price: number; packSize: str
   oats: { name: "Quaker Oats", price: 115, packSize: "500g" },
 };
 
+/** How long a demo order stays "on the way" before trackOrder() reports it
+ *  delivered. Named and isolated here so it's a one-line change — or an
+ *  obvious deletion — before any user testing that involves real timing
+ *  expectations, rather than a magic number buried in trackOrder(). */
+const DEMO_DELIVERY_DELAY_MS = 90_000;
+
 const MOCK_ADDRESS: AddressOption = {
   id: "mock-address",
   label: "Home (demo)",
@@ -124,6 +130,7 @@ const MOCK_ADDRESS: AddressOption = {
 export class MockCommerceAdapter implements CommerceAdapter {
   constructor(private platform: Platform) {}
   private cart = new Map<string, { name: string; quantity: number; price: number }>();
+  private checkoutsByIdempotencyKey = new Map<string, PlatformOrderResult>();
 
   async isConnected() {
     return false;
@@ -166,18 +173,31 @@ export class MockCommerceAdapter implements CommerceAdapter {
   async clearCart() {
     this.cart.clear();
   }
-  async checkout(_addressId: string): Promise<PlatformOrderResult> {
+  async checkout(_addressId: string, _riderTip?: number, idempotencyKey?: string): Promise<PlatformOrderResult> {
+    if (idempotencyKey) {
+      const prior = this.checkoutsByIdempotencyKey.get(idempotencyKey);
+      if (prior) return prior; // retry of an already-placed demo order — don't double it
+    }
     await new Promise((r) => setTimeout(r, 600));
     const cart = await this.getCart();
     this.cart.clear();
-    return {
+    const order: PlatformOrderResult = {
       id: `DEMO-${Date.now()}`,
       status: "placed",
       totalAmount: cart.total,
       placedAt: new Date().toISOString(),
     };
+    if (idempotencyKey) this.checkoutsByIdempotencyKey.set(idempotencyKey, order);
+    return order;
   }
-  async trackOrder(): Promise<TrackingInfo> {
+  async trackOrder(orderId: string): Promise<TrackingInfo> {
+    // Simulates delivery progress from the timestamp embedded in the demo
+    // order id, so "pantry updates on arrival" is actually observable in
+    // demo mode instead of orders sitting in "on_the_way" forever.
+    const match = /^DEMO-(\d+)$/.exec(orderId);
+    if (match && Date.now() - Number(match[1]) > DEMO_DELIVERY_DELAY_MS) {
+      return { status: "delivered", eta: "Delivered" };
+    }
     return { status: "on_the_way", eta: "25 minutes" };
   }
   async getOrderHistory() {

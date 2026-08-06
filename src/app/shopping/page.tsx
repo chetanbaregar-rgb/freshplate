@@ -1,8 +1,9 @@
 "use client";
 import { useEffect, useState } from "react";
+import { useRouter } from "next/navigation";
 import { useAppStore } from "@/lib/store";
 import AppShell from "@/components/layout/AppShell";
-import { ShoppingCart, Package, Check, Zap, RefreshCw, ChevronDown, ChevronUp, AlertTriangle } from "lucide-react";
+import { ShoppingCart, Package, Check, Zap, RefreshCw, ChevronDown, ChevronUp, AlertTriangle, ChefHat } from "lucide-react";
 import { cn, formatCurrency } from "@/lib/utils";
 import { toast } from "sonner";
 import { useCommerceStatus } from "@/lib/mcp/useCommerceStatus";
@@ -20,7 +21,8 @@ const CATEGORY_LABELS: Record<string, string> = {
 };
 
 export default function ShoppingPage() {
-  const { shoppingList, buildShoppingList, toggleShoppingItem, refreshAvailability, placeOrder, weeklyPlan } =
+  const router = useRouter();
+  const { household, shoppingList, buildShoppingList, toggleShoppingItem, refreshAvailability, placeOrder, weeklyPlan } =
     useAppStore();
   const [platform, setPlatform] = useState<"zepto" | "instamart">("instamart");
   const [collapsedCategories, setCollapsedCategories] = useState<Set<string>>(new Set());
@@ -82,7 +84,8 @@ export default function ShoppingPage() {
     setShowConfirm(false);
     setOrdering(true);
     try {
-      if (!isLive) await new Promise((r) => setTimeout(r, 1200)); // keep the demo's simulated feel
+      // Demo latency now lives in one place — MockCommerceAdapter.checkout()
+      // (see placeOrder in store.ts) — instead of being simulated here too.
       await placeOrder(platform, addressId ?? undefined);
       setOrdered(true);
       toast.success(
@@ -94,6 +97,26 @@ export default function ShoppingPage() {
       setOrdering(false);
     }
   };
+
+  // Deep-linking here without completing onboarding leaves household null
+  // (or incomplete) — bounce to onboarding instead of showing an indefinite loader.
+  useEffect(() => {
+    if (!household?.onboardingComplete) {
+      router.replace("/onboarding");
+    }
+  }, [household, router]);
+
+  if (!household?.onboardingComplete) {
+    return (
+      <div className="flex min-h-screen flex-col items-center justify-center bg-[rgb(252,249,245)] gap-4">
+        <div className="relative w-12 h-12 flex items-center justify-center">
+          <span className="absolute inset-0 rounded-2xl border-4 border-brand-100 border-t-brand-500 animate-spin" />
+          <ChefHat className="w-5 h-5 text-brand-500" />
+        </div>
+        <p className="text-xs font-medium text-muted-foreground animate-pulse">Redirecting…</p>
+      </div>
+    );
+  }
 
   if (!weeklyPlan) {
     return (
@@ -193,6 +216,7 @@ export default function ShoppingPage() {
                     >
                       <button
                         onClick={() => toggleShoppingItem(item.ingredientId)}
+                        aria-label={item.checked ? `Mark ${item.name} as not bought` : `Mark ${item.name} as bought`}
                         className={cn(
                           "w-5 h-5 rounded-md border-2 flex items-center justify-center flex-shrink-0 transition-colors",
                           item.checked
@@ -211,7 +235,14 @@ export default function ShoppingPage() {
                       </div>
                       <div className="text-right flex-shrink-0">
                         {item.price ? (
-                          <p className="text-sm font-semibold text-brand-600">{formatCurrency(item.price)}</p>
+                          <p className="text-sm font-semibold text-brand-600 flex items-center justify-end gap-1.5">
+                            {formatCurrency(item.price)}
+                            {!isLive && (
+                              <span className="text-[9px] font-semibold text-gray-400 bg-gray-100 px-1.5 py-0.5 rounded-full" title="Sample price — connect a platform in Profile for a real quote">
+                                demo
+                              </span>
+                            )}
+                          </p>
                         ) : (
                           <span className="text-xs text-amber-600 bg-amber-50 px-2 py-0.5 rounded-full">checking…</span>
                         )}
@@ -288,7 +319,15 @@ export default function ShoppingPage() {
                 <span className="text-muted-foreground">Est. total</span>
                 <span className="font-medium">{formatCurrency(totalEstimate)}</span>
               </div>
+              <div className="flex justify-between">
+                <span className="text-muted-foreground">Payment</span>
+                <span className="font-medium">Cash on Delivery</span>
+              </div>
             </div>
+            <p className="text-[11px] text-muted-foreground">
+              Online/UPI payment isn&apos;t wired up yet — every live order goes out as Cash on
+              Delivery. Quantities are also rounded up to whole packs where a partial pack isn&apos;t sold.
+            </p>
             <div className="flex gap-3">
               <button
                 onClick={() => setShowConfirm(false)}

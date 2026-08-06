@@ -2,10 +2,14 @@
 import { create } from "zustand";
 import { persist } from "zustand/middleware";
 import type {
-  Household, Member, WeeklyPlan, PlanMeal, PantryItem, Order, ShoppingItem, Platform, Recipe,
+  Household, Member, WeeklyPlan, PlanMeal, PantryItem, Order, OrderStatus, ShoppingItem, Platform, Recipe, HealthGoal, Ingredient,
 } from "./types";
-import { RECIPES, filterRecipes, getIngredientById } from "./recipes";
+import {
+  RECIPES, filterRecipes, getIngredientById, effectiveDietType, excludedIngredientTerms, householdGoals,
+  getIngredientCategoryByName,
+} from "./recipes";
 import { resolveAdapter } from "./mcp/adapter";
+import { convertQuantity } from "./units";
 import { startOfWeek, format } from "date-fns";
 
 /**
@@ -95,6 +99,10 @@ interface AppState {
   updatePantryItem: (id: string, patch: Partial<PantryItem>) => void;
   removePantryItem: (id: string) => void;
   markMealCooked: (day: number, mealType: string) => void;
+  /** Polls trackOrder() for every non-terminal order and, on a transition to
+   *  "delivered", adds that order's items back into the pantry. Safe to call
+   *  repeatedly/concurrently — it only ever moves an order forward. */
+  checkDeliveries: () => Promise<void>;
 }
 
 const MEAL_TYPES = ["breakfast", "lunch", "snack", "dinner"] as const;
@@ -114,12 +122,28 @@ function weightedPick(
   recipes: Recipe[],
   pantry: PantryItem[],
   platform: Platform | null,
-  availabilityCache: Map<string, boolean>
+  availabilityCache: Map<string, boolean>,
+  regionPreference: string,
+  goals: HealthGoal[]
 ): Recipe | undefined {
   if (recipes.length === 0) return undefined;
-  const weights = recipes.map(
-    (r) => 1 + pantryScore(r, pantry) * 3 + availabilityScore(r, platform, availabilityCache) * 2
-  );
+  const weights = recipes.map((r) => {
+    // Region is a preference weight, not a hard filter — hard-filtering by
+    // state shrinks the pool to ~1 recipe/meal-type for most states, which
+    // guarantees the same dish repeats every day of the week. Weighting
+    // instead keeps the full diet-appropriate pool in play while still
+    // favoring regional dishes when there's a real choice.
+    const regionScore = r.cuisineRegion.includes(regionPreference) ? 1 : r.cuisineRegion.includes("Pan-India") ? 0.5 : 0;
+    // Fraction of the household's distinct goals this recipe serves — so a
+    // mixed-goal household (e.g. one member on weight_loss, another on
+    // muscle) isn't planned entirely around whoever was added first.
+    const goalScore = goals.length > 0 ? goals.filter((g) => r.goalTags.includes(g)).length / goals.length : 0;
+    return 1
+      + pantryScore(r, pantry) * 3
+      + availabilityScore(r, platform, availabilityCache) * 2
+      + regionScore * 2
+      + goalScore * 2;
+  });
   const total = weights.reduce((a, b) => a + b, 0);
   let r = Math.random() * total;
   for (let i = 0; i < recipes.length; i++) {
@@ -140,25 +164,22 @@ async function generatePlan(household: Household, history: string[], pantry: Pan
   const regionPreference = household.stateOfOrigin ?? household.state;
   const platform = household.connectedPlatforms[0] ?? null;
 
-  const dietPool = filterRecipes({ dietType: household.dietType });
+  // Most-restrictive diet across the household default + any member
+  // override, and a hard exclusion list from every member's allergies and
+  // dislikes — both are safety/correctness requirements, not preferences,
+  // so they're applied as filterRecipes hard filters rather than weights.
+  const dietType = effectiveDietType(household);
+  const excludeTerms = excludedIngredientTerms(household);
+  const goals = householdGoals(household);
+
+  const dietPool = filterRecipes({ dietType, excludeIngredientTerms: excludeTerms });
   const availabilityCache = platform
     ? await buildAvailabilityCache(dietPool, platform)
     : new Map<string, boolean>();
 
   for (let day = 0; day < 7; day++) {
     for (const mealType of MEAL_TYPES) {
-      const primaryGoal = household.members[0]?.healthGoal ?? "maintenance";
-
-      // Priority 1: matches household's region + goal
-      // Priority 2: matches goal only (region pool was empty for this slot)
-      // Fallback: diet + meal type only (existing behavior)
-      const withRegion = filterRecipes({
-        dietType: household.dietType, mealType, goalTags: [primaryGoal], state: regionPreference,
-      });
-      const withGoal = withRegion.length > 0
-        ? withRegion
-        : filterRecipes({ dietType: household.dietType, mealType, goalTags: [primaryGoal] });
-      const all = withGoal.length > 0 ? withGoal : filterRecipes({ dietType: household.dietType, mealType });
+      const all = filterRecipes({ dietType, mealType, excludeIngredientTerms: excludeTerms });
 
       // Priority 1: not used this week AND not in any prior week
       // Priority 2: not used this week (may be in prior weeks)
@@ -167,19 +188,65 @@ async function generatePlan(household: Household, history: string[], pantry: Pan
       const newThisWeek = all.filter(r => !usedThisWeek.has(r.id));
       const pool = fresh.length > 0 ? fresh : newThisWeek.length > 0 ? newThisWeek : all;
 
-      const recipe = weightedPick(pool, pantry, platform, availabilityCache);
+      const recipe = weightedPick(pool, pantry, platform, availabilityCache, regionPreference, goals);
       if (recipe) usedThisWeek.add(recipe.id);
 
       meals.push({
         day, mealType,
+        // No recipe matches this household's diet/allergy constraints for
+        // this meal slot — left null rather than silently ignoring a safety
+        // constraint (e.g. an allergy) to force a match. The calendar/swap
+        // UI already handles a null recipeId.
         recipeId: recipe?.id ?? null,
         isOrderIn: false, locked: false,
-        servingsMultiplier: household.members.length,
+        servingsMultiplier: Math.max(1, household.members.length),
       });
     }
   }
 
   return { id: `plan-${Date.now()}`, weekStart, meals, status: "draft" };
+}
+
+/** Sums quantity across every pantry entry matching `ing`'s name (not just
+ *  the first, which previously left duplicate pantry rows invisible to stock
+ *  math), converting each into `ing`'s unit. A pantry entry in an
+ *  incompatible unit (e.g. logged in "kg" for an ingredient measured in
+ *  "medium") is skipped rather than guessed at — better to over-buy than to
+ *  silently assume stock that may not cover the need. */
+function stockFor(ing: Ingredient, pantry: PantryItem[]): number {
+  const key = ing.name.trim().toLowerCase();
+  return pantry
+    .filter((p) => p.name.trim().toLowerCase() === key)
+    .reduce((sum, p) => sum + (convertQuantity(p.quantity, p.unit, ing.unit) ?? 0), 0);
+}
+
+function newShoppingItem(ing: Ingredient, needed: number, pantry: PantryItem[]): ShoppingItem {
+  return {
+    ingredientId: ing.id,
+    name: ing.name,
+    category: ing.category,
+    qtyNeeded: needed,
+    qtyInStock: stockFor(ing, pantry),
+    qtyToBuy: 0, // recomputed once all recipes for the week have been aggregated
+    unit: ing.unit,
+    available: true,
+    checked: false,
+  };
+}
+
+/** Normalizes a raw platform tracking status string into our OrderStatus
+ *  enum. Zepto/Instamart's MCP tools return free-text platform status
+ *  strings (not guaranteed to match our enum), so this maps common
+ *  substrings and otherwise keeps the prior known status rather than
+ *  guessing — an unrecognized string shouldn't silently regress an order
+ *  from "on_the_way" back to "placed". */
+function normalizeOrderStatus(raw: string, fallback: OrderStatus): OrderStatus {
+  const s = raw.toLowerCase();
+  if (s.includes("deliver")) return "delivered";
+  if (s.includes("cancel")) return "cancelled";
+  if (s.includes("way") || s.includes("transit") || s.includes("dispatch") || s.includes("out for")) return "on_the_way";
+  if (s.includes("placed") || s.includes("confirm") || s.includes("accept")) return "placed";
+  return fallback;
 }
 
 export const useAppStore = create<AppState>()(
@@ -289,6 +356,11 @@ export const useAppStore = create<AppState>()(
         const { weeklyPlan, pantry } = get();
         if (!weeklyPlan) return;
 
+        // Keyed by canonical ingredient *name*, not recipe-authored ingredient
+        // id — the recipe library gives the same real ingredient a distinct id
+        // per recipe (onion, onion2, …onion15), so keying by id was listing
+        // "Onion" as up to 15 separate rows and netting pantry stock off each
+        // one independently instead of once against the combined weekly need.
         const ingredientMap = new Map<string, ShoppingItem>();
 
         for (const meal of weeklyPlan.meals) {
@@ -298,27 +370,37 @@ export const useAppStore = create<AppState>()(
 
           for (const ing of recipe.ingredients) {
             const needed = ing.quantity * meal.servingsMultiplier / recipe.servings;
-            if (ingredientMap.has(ing.id)) {
-              const existing = ingredientMap.get(ing.id)!;
-              existing.qtyNeeded += needed;
-            } else {
-              const inStock = pantry.find((p) => p.name.toLowerCase() === ing.name.toLowerCase())?.quantity ?? 0;
-              ingredientMap.set(ing.id, {
-                ingredientId: ing.id,
-                name: ing.name,
-                category: ing.category,
-                qtyNeeded: needed,
-                qtyInStock: inStock,
-                qtyToBuy: Math.max(0, needed - inStock),
-                unit: ing.unit,
-                available: true,
-                checked: false,
-              });
+            const key = ing.name.trim().toLowerCase();
+            const existing = ingredientMap.get(key);
+
+            if (existing) {
+              if (existing.unit.toLowerCase() === ing.unit.toLowerCase()) {
+                existing.qtyNeeded += needed;
+                continue;
+              }
+              const converted = convertQuantity(needed, ing.unit, existing.unit);
+              if (converted !== null) {
+                existing.qtyNeeded += converted;
+                continue;
+              }
+              // Same ingredient name, incompatible units across recipes (rare) —
+              // keep a distinct line rather than silently corrupt the total.
+              const altKey = `${key}__${ing.unit.toLowerCase()}`;
+              const altExisting = ingredientMap.get(altKey);
+              if (altExisting) {
+                altExisting.qtyNeeded += needed;
+              } else {
+                ingredientMap.set(altKey, newShoppingItem(ing, needed, pantry));
+              }
+              continue;
             }
+            ingredientMap.set(key, newShoppingItem(ing, needed, pantry));
           }
         }
 
-        const list = Array.from(ingredientMap.values()).filter((i) => i.qtyToBuy > 0);
+        const list = Array.from(ingredientMap.values())
+          .map((i) => ({ ...i, qtyToBuy: Math.max(0, i.qtyNeeded - i.qtyInStock) }))
+          .filter((i) => i.qtyToBuy > 0);
         set({ shoppingList: list });
       },
 
@@ -381,8 +463,19 @@ export const useAppStore = create<AppState>()(
           if (lines.length === 0) {
             throw new Error("No items have live pricing yet — refresh availability before ordering.");
           }
+          // Deterministic from this exact checkout's contents (plan + platform
+          // + item/qty signature) rather than a fresh random value per call —
+          // so a double-click, a slow-network retry, or a post-timeout resend
+          // that calls placeOrder() again for the *same* pending cart reuses
+          // the same key and the API route can recognize and dedupe it,
+          // instead of placing two real, binding orders.
+          const idempotencyKey = [
+            weeklyPlan?.id ?? "no-plan",
+            platform,
+            unchecked.map((i) => `${i.ingredientId}:${i.qtyToBuy}`).sort().join(","),
+          ].join("|");
           await adapter.updateCart(lines);
-          const result = await adapter.checkout(addressId);
+          const result = await adapter.checkout(addressId, undefined, idempotencyKey);
           const order: Order = {
             id: result.id,
             platform,
@@ -396,16 +489,30 @@ export const useAppStore = create<AppState>()(
           return order;
         }
 
-        // Demo fallback — no connected account for this platform.
-        const items = unchecked.map((i) => ({ name: i.name, quantity: i.qtyToBuy, unit: i.unit, price: i.price ?? 50 }));
+        // Demo fallback — no connected account for this platform. Routes
+        // through the same MockCommerceAdapter.checkout() used everywhere
+        // else in demo mode (one source of demo pricing, latency, and order
+        // ids) instead of re-deriving an order shape here. Each line gets a
+        // synthetic platformRef distinct per ingredient so the mock cart's
+        // Map (keyed by JSON.stringify(platformRef)) doesn't collapse
+        // multiple items that haven't been through refreshAvailability yet.
+        const demoLines = unchecked.map((i) => ({
+          quantity: Math.max(1, Math.ceil(i.qtyToBuy)),
+          platformRef: i.platformRef ?? { demoKey: i.ingredientId },
+          name: i.name,
+          price: i.price,
+          packSize: i.packSize,
+        }));
+        await adapter.updateCart(demoLines);
+        const demoResult = await adapter.checkout("demo-address");
         const order: Order = {
-          id: `DEMO-${Date.now()}`,
+          id: demoResult.id,
           platform,
           planId: weeklyPlan?.id ?? "",
-          items,
+          items: unchecked.map((i) => ({ name: i.name, quantity: i.qtyToBuy, unit: i.unit, price: i.price ?? 50 })),
           status: "placed",
-          placedAt: new Date().toISOString(),
-          totalAmount: items.reduce((s, i) => s + i.price * i.quantity, 0),
+          placedAt: demoResult.placedAt,
+          totalAmount: demoResult.totalAmount ?? unchecked.reduce((s, i) => s + (i.price ?? 50) * i.qtyToBuy, 0),
         };
         set((s) => ({ orders: [order, ...s.orders] }));
         return order;
@@ -436,21 +543,87 @@ export const useAppStore = create<AppState>()(
         const recipe = RECIPES.find((r) => r.id === meal.recipeId);
         if (!recipe) return;
 
-        const updatedPantry = [...pantry];
+        let updatedPantry = [...pantry];
         for (const ing of recipe.ingredients) {
-          const used = ing.quantity * meal.servingsMultiplier / recipe.servings;
-          const idx = updatedPantry.findIndex(
-            (p) => p.name.toLowerCase() === ing.name.toLowerCase()
-          );
-          if (idx >= 0) {
-            updatedPantry[idx] = {
-              ...updatedPantry[idx],
-              quantity: Math.max(0, updatedPantry[idx].quantity - used),
+          let remainingInIngUnit = ing.quantity * meal.servingsMultiplier / recipe.servings;
+          const key = ing.name.trim().toLowerCase();
+          // Deplete across every matching pantry entry (not just the first —
+          // a second "Onion" row used to be invisible to this math), in
+          // array order, until the recipe's need is covered or stock runs out.
+          updatedPantry = updatedPantry.map((p) => {
+            if (remainingInIngUnit <= 0 || p.name.trim().toLowerCase() !== key) return p;
+            const neededInPantryUnit = convertQuantity(remainingInIngUnit, ing.unit, p.unit);
+            if (neededInPantryUnit === null) return p; // incompatible units — skip rather than corrupt
+            const deductedInPantryUnit = Math.min(p.quantity, neededInPantryUnit);
+            remainingInIngUnit -= convertQuantity(deductedInPantryUnit, p.unit, ing.unit) ?? 0;
+            return {
+              ...p,
+              quantity: Math.max(0, p.quantity - deductedInPantryUnit),
               updatedAt: new Date().toISOString(),
             };
-          }
+          });
         }
         set({ pantry: updatedPantry });
+      },
+
+      checkDeliveries: async () => {
+        const { orders, pantry } = get();
+        const pending = orders.filter((o) => o.status === "placed" || o.status === "on_the_way");
+        if (pending.length === 0) return;
+
+        const updatedOrders = [...orders];
+        let updatedPantry = [...pantry];
+
+        for (const order of pending) {
+          try {
+            const { adapter } = await resolveAdapter(order.platform);
+            const tracking = await adapter.trackOrder(order.id);
+            const idx = updatedOrders.findIndex((o) => o.id === order.id);
+            if (idx < 0) continue;
+
+            const nextStatus = normalizeOrderStatus(tracking.status, updatedOrders[idx].status);
+            if (nextStatus === "delivered" && updatedOrders[idx].status !== "delivered") {
+              updatedOrders[idx] = { ...updatedOrders[idx], status: "delivered", deliveredAt: new Date().toISOString() };
+
+              // Closes the plan -> shop -> cook -> restock loop: a delivered
+              // order's items land back in the pantry automatically, instead
+              // of requiring the household to log them in by hand.
+              for (const item of order.items) {
+                const itemKey = item.name.trim().toLowerCase();
+                const existingIdx = updatedPantry.findIndex((p) => p.name.trim().toLowerCase() === itemKey);
+                if (existingIdx >= 0) {
+                  const converted = convertQuantity(item.quantity, item.unit, updatedPantry[existingIdx].unit);
+                  if (converted !== null) {
+                    updatedPantry[existingIdx] = {
+                      ...updatedPantry[existingIdx],
+                      quantity: updatedPantry[existingIdx].quantity + converted,
+                      updatedAt: new Date().toISOString(),
+                    };
+                    continue;
+                  }
+                }
+                updatedPantry = [
+                  ...updatedPantry,
+                  {
+                    id: `pantry-${Date.now()}-${itemKey.replace(/\s+/g, "-")}`,
+                    name: item.name,
+                    quantity: item.quantity,
+                    unit: item.unit,
+                    category: getIngredientCategoryByName(item.name),
+                    updatedAt: new Date().toISOString(),
+                  },
+                ];
+              }
+            } else if (nextStatus !== updatedOrders[idx].status) {
+              updatedOrders[idx] = { ...updatedOrders[idx], status: nextStatus };
+            }
+          } catch {
+            // Best-effort — a tracking failure for one order shouldn't block
+            // status refresh for the household's other orders.
+          }
+        }
+
+        set({ orders: updatedOrders, pantry: updatedPantry });
       },
     }),
     {
@@ -461,6 +634,7 @@ export const useAppStore = create<AppState>()(
         pantry: s.pantry,
         orders: s.orders,
         usedRecipeHistory: s.usedRecipeHistory,
+        onboardingStep: s.onboardingStep,
       }),
     }
   )
