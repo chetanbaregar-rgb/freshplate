@@ -68,9 +68,10 @@ function normalizeCart(raw: Json): Cart {
     price: typeof i.price?.offerPrice === "number" ? i.price.offerPrice : i.price ?? 0,
     platformRef: { spinId: i.spinId, skuId: i.skuId },
   }));
-  const total =
-    typeof raw?.bill?.total === "number" ? raw.bill.total : lines.reduce((sum, l) => sum + l.price * l.quantity, 0);
-  return { platform: "instamart", items: lines, total };
+  if (typeof raw?.bill?.total !== "number") {
+    throw new Error("Instamart did not return a valid cart total — refusing to show a possibly-wrong amount");
+  }
+  return { platform: "instamart", items: lines, total: raw.bill.total };
 }
 
 async function listAddresses(ctx: McpContext): Promise<AddressOption[]> {
@@ -138,6 +139,11 @@ async function checkout(ctx: McpContext, opts: CheckoutOptions): Promise<Platfor
     const order = result?.order ?? result;
     const status = String(order?.status ?? "placed");
 
+    if (typeof order?.total !== "number") {
+      throw new Error("Instamart did not return a valid order total — refusing to show a possibly-wrong amount");
+    }
+    const totalAmount = order.total;
+
     // Defensive: if Cash orders ever land in a pending state too, finalize —
     // but never call confirm_order on a failed/cancelled status.
     if (status.toUpperCase().includes("PENDING") && order?.orderId) {
@@ -145,7 +151,7 @@ async function checkout(ctx: McpContext, opts: CheckoutOptions): Promise<Platfor
       return {
         id: String(confirmed?.orderId ?? order.orderId),
         status: String(confirmed?.status ?? "placed"),
-        totalAmount: order?.total,
+        totalAmount,
         placedAt: new Date().toISOString(),
       };
     }
@@ -153,7 +159,7 @@ async function checkout(ctx: McpContext, opts: CheckoutOptions): Promise<Platfor
     return {
       id: String(order?.orderId ?? order?.id ?? `instamart-${Date.now()}`),
       status,
-      totalAmount: order?.total,
+      totalAmount,
       placedAt: new Date().toISOString(),
     };
   });

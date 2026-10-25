@@ -5,7 +5,7 @@ import { useAppStore } from "@/lib/store";
 import AppShell from "@/components/layout/AppShell";
 import { GOAL_LABELS, DIET_LABELS } from "@/lib/utils";
 import { goalColor, computeTarget } from "@/lib/nutrition";
-import { User, Plus, Trash2, ChevronRight, Zap, Package, RotateCcw, X } from "lucide-react";
+import { User, Plus, Trash2, ChevronRight, Zap, Package, RotateCcw, X, ChefHat } from "lucide-react";
 import { cn } from "@/lib/utils";
 import { toast } from "sonner";
 import { useCommerceStatus } from "@/lib/mcp/useCommerceStatus";
@@ -14,7 +14,7 @@ import type { Member, DietType, HealthGoal, Gender, ActivityLevel, Platform } fr
 
 export default function ProfilePage() {
   const router = useRouter();
-  const { household, addMember, removeMember, updateHousehold, generateWeeklyPlan } = useAppStore();
+  const { household, addMember, updateMember, removeMember, updateHousehold, generateWeeklyPlan } = useAppStore();
   const [showAddMember, setShowAddMember] = useState(false);
   const { status, loading: statusLoading, disconnect, refresh: refreshStatus } = useCommerceStatus();
   const [disconnecting, setDisconnecting] = useState<Platform | null>(null);
@@ -40,8 +40,30 @@ export default function ProfilePage() {
   const [newMember, setNewMember] = useState<Partial<Member>>({
     name: "", age: 25, gender: "female", healthGoal: "maintenance", activityLevel: "moderate", allergies: [], dislikes: [],
   });
+  const [newAllergiesText, setNewAllergiesText] = useState("");
+  const [newDislikesText, setNewDislikesText] = useState("");
 
-  if (!household) return null;
+  // Deep-linking here without completing onboarding leaves household null
+  // (or incomplete) — bounce to onboarding instead of rendering a blank page.
+  useEffect(() => {
+    if (!household?.onboardingComplete) {
+      router.replace("/onboarding");
+    }
+  }, [household, router]);
+
+  if (!household?.onboardingComplete) {
+    return (
+      <div className="flex min-h-screen flex-col items-center justify-center bg-[rgb(252,249,245)] gap-4">
+        <div className="relative w-12 h-12 flex items-center justify-center">
+          <span className="absolute inset-0 rounded-2xl border-4 border-brand-100 border-t-brand-500 animate-spin" />
+          <ChefHat className="w-5 h-5 text-brand-500" />
+        </div>
+        <p className="text-xs font-medium text-muted-foreground animate-pulse">Redirecting…</p>
+      </div>
+    );
+  }
+
+  const parseCsv = (text: string) => text.split(",").map((s) => s.trim()).filter(Boolean);
 
   const handleAddMember = () => {
     if (!newMember.name) return;
@@ -50,13 +72,17 @@ export default function ProfilePage() {
       name: newMember.name!,
       age: newMember.age ?? 25,
       gender: newMember.gender as Gender ?? "female",
+      weightKg: newMember.weightKg,
+      heightCm: newMember.heightCm,
       healthGoal: newMember.healthGoal as HealthGoal ?? "maintenance",
       activityLevel: newMember.activityLevel as ActivityLevel ?? "moderate",
-      allergies: [],
-      dislikes: [],
+      allergies: parseCsv(newAllergiesText),
+      dislikes: parseCsv(newDislikesText),
     });
     setShowAddMember(false);
     setNewMember({ name: "", age: 25, gender: "female", healthGoal: "maintenance", activityLevel: "moderate", allergies: [], dislikes: [] });
+    setNewAllergiesText("");
+    setNewDislikesText("");
     toast.success("Member added! Regenerate your plan to include them.");
   };
 
@@ -123,7 +149,7 @@ export default function ProfilePage() {
                       <div className="flex items-center justify-between">
                         <p className="font-semibold text-sm">{m.name}</p>
                         {household.members.length > 1 && (
-                          <button onClick={() => removeMember(m.id)} className="text-gray-300 hover:text-red-500">
+                          <button onClick={() => removeMember(m.id)} aria-label={`Remove ${m.name}`} className="text-gray-300 hover:text-red-500">
                             <Trash2 className="w-3.5 h-3.5" />
                           </button>
                         )}
@@ -139,6 +165,29 @@ export default function ProfilePage() {
                         <NutriBadge label="Protein" value={`${target.proteinG}`} unit="g" />
                         <NutriBadge label="Carbs" value={`${target.carbsG}`} unit="g" />
                       </div>
+                      <div className="mt-3">
+                        <label className="text-[10px] text-muted-foreground block mb-1">Diet override</label>
+                        <select
+                          value={m.dietOverride ?? ""}
+                          onChange={(e) => updateMember(m.id, { dietOverride: e.target.value ? (e.target.value as DietType) : undefined })}
+                          className="w-full border border-gray-200 rounded-lg p-2 text-xs focus:outline-none focus:ring-2 focus:ring-brand-400"
+                        >
+                          <option value="">Household default ({DIET_LABELS[household.dietType]})</option>
+                          {(["veg", "egg", "nonveg"] as DietType[]).map((d) => (
+                            <option key={d} value={d}>{DIET_LABELS[d]}</option>
+                          ))}
+                        </select>
+                      </div>
+                      {(m.allergies.length > 0 || m.dislikes.length > 0) && (
+                        <div className="flex flex-wrap gap-1 mt-2">
+                          {m.allergies.map((a) => (
+                            <span key={a} className="text-[10px] bg-red-50 text-red-600 px-2 py-0.5 rounded-full">⚠ {a}</span>
+                          ))}
+                          {m.dislikes.map((d) => (
+                            <span key={d} className="text-[10px] bg-gray-100 text-gray-500 px-2 py-0.5 rounded-full">{d}</span>
+                          ))}
+                        </div>
+                      )}
                     </div>
                   </div>
                 </div>
@@ -215,13 +264,14 @@ export default function ProfilePage() {
           <div className="relative bg-white w-full lg:max-w-md rounded-t-3xl lg:rounded-3xl p-6 z-10">
             <div className="flex items-center justify-between mb-5">
               <h3 className="text-base font-bold">Add Family Member</h3>
-              <button onClick={() => setShowAddMember(false)}>
+              <button onClick={() => setShowAddMember(false)} aria-label="Close">
                 <X className="w-5 h-5 text-gray-400" />
               </button>
             </div>
             <div className="space-y-3">
               <input
                 placeholder="Name"
+                aria-label="Name"
                 value={newMember.name ?? ""}
                 onChange={(e) => setNewMember((p) => ({ ...p, name: e.target.value }))}
                 className="w-full border border-gray-200 rounded-xl p-3 text-sm focus:outline-none focus:ring-2 focus:ring-brand-400"
@@ -230,6 +280,7 @@ export default function ProfilePage() {
                 <input
                   type="number"
                   placeholder="Age"
+                  aria-label="Age"
                   value={newMember.age ?? ""}
                   onChange={(e) => setNewMember((p) => ({ ...p, age: Number(e.target.value) }))}
                   className="border border-gray-200 rounded-xl p-3 text-sm focus:outline-none focus:ring-2 focus:ring-brand-400"
@@ -237,6 +288,7 @@ export default function ProfilePage() {
                 <select
                   value={newMember.gender ?? "female"}
                   onChange={(e) => setNewMember((p) => ({ ...p, gender: e.target.value as Gender }))}
+                  aria-label="Gender"
                   className="border border-gray-200 rounded-xl p-3 text-sm focus:outline-none focus:ring-2 focus:ring-brand-400"
                 >
                   <option value="female">Female</option>
@@ -247,10 +299,43 @@ export default function ProfilePage() {
               <select
                 value={newMember.healthGoal ?? "maintenance"}
                 onChange={(e) => setNewMember((p) => ({ ...p, healthGoal: e.target.value as HealthGoal }))}
+                aria-label="Health goal"
                 className="w-full border border-gray-200 rounded-xl p-3 text-sm focus:outline-none focus:ring-2 focus:ring-brand-400"
               >
                 {Object.entries(GOAL_LABELS).map(([v, l]) => <option key={v} value={v}>{l}</option>)}
               </select>
+              <div className="grid grid-cols-2 gap-3">
+                <input
+                  type="number"
+                  placeholder="Weight (kg, optional)"
+                  aria-label="Weight in kilograms, optional"
+                  value={newMember.weightKg ?? ""}
+                  onChange={(e) => setNewMember((p) => ({ ...p, weightKg: e.target.value ? Number(e.target.value) : undefined }))}
+                  className="border border-gray-200 rounded-xl p-3 text-sm focus:outline-none focus:ring-2 focus:ring-brand-400"
+                />
+                <input
+                  type="number"
+                  placeholder="Height (cm, optional)"
+                  aria-label="Height in centimeters, optional"
+                  value={newMember.heightCm ?? ""}
+                  onChange={(e) => setNewMember((p) => ({ ...p, heightCm: e.target.value ? Number(e.target.value) : undefined }))}
+                  className="border border-gray-200 rounded-xl p-3 text-sm focus:outline-none focus:ring-2 focus:ring-brand-400"
+                />
+              </div>
+              <input
+                placeholder="Allergies (comma-separated, optional)"
+                aria-label="Allergies, comma-separated, optional"
+                value={newAllergiesText}
+                onChange={(e) => setNewAllergiesText(e.target.value)}
+                className="w-full border border-gray-200 rounded-xl p-3 text-sm focus:outline-none focus:ring-2 focus:ring-brand-400"
+              />
+              <input
+                placeholder="Dislikes (comma-separated, optional)"
+                aria-label="Dislikes, comma-separated, optional"
+                value={newDislikesText}
+                onChange={(e) => setNewDislikesText(e.target.value)}
+                className="w-full border border-gray-200 rounded-xl p-3 text-sm focus:outline-none focus:ring-2 focus:ring-brand-400"
+              />
               <button
                 onClick={handleAddMember}
                 disabled={!newMember.name}

@@ -1,18 +1,33 @@
 "use client";
 import Link from "next/link";
+import { useEffect } from "react";
 import { usePathname } from "next/navigation";
-import { CalendarDays, ShoppingCart, Package, User, ChefHat } from "lucide-react";
+import { CalendarDays, ShoppingCart, Package, BookOpen, User, ChefHat } from "lucide-react";
 import { cn } from "@/lib/utils";
+import { useAppStore } from "@/lib/store";
+
+const DELIVERY_POLL_MS = 60_000;
 
 const NAV = [
   { href: "/calendar", label: "Plan", icon: CalendarDays },
   { href: "/shopping", label: "Shop", icon: ShoppingCart },
   { href: "/pantry", label: "Pantry", icon: Package },
+  { href: "/recipes", label: "Recipes", icon: BookOpen },
   { href: "/profile", label: "Profile", icon: User },
 ];
 
 export default function AppShell({ children }: { children: React.ReactNode }) {
   const path = usePathname();
+  const checkDeliveries = useAppStore((s) => s.checkDeliveries);
+
+  // Closes the plan -> shop -> cook -> restock loop: refresh order tracking
+  // on load and periodically while the app is open, so a delivered order's
+  // items land back in the pantry without the household checking manually.
+  useEffect(() => {
+    checkDeliveries();
+    const id = setInterval(checkDeliveries, DELIVERY_POLL_MS);
+    return () => clearInterval(id);
+  }, [checkDeliveries]);
 
   return (
     <div className="flex min-h-screen bg-[rgb(252,249,245)]">

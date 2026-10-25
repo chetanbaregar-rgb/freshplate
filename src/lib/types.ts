@@ -19,6 +19,10 @@ export interface Member {
   name: string;
   age: number;
   gender: Gender;
+  /** Optional — falls back to a population-average estimate by gender when
+   *  absent (e.g. members created before this field existed). */
+  weightKg?: number;
+  heightCm?: number;
   dietOverride?: DietType;
   healthGoal: HealthGoal;
   activityLevel: ActivityLevel;

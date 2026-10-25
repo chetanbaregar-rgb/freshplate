@@ -1,6 +1,7 @@
 import { cookies } from "next/headers";
 import { getIronSession, type IronSession } from "iron-session";
 import type { Platform } from "@/lib/types";
+import type { PlatformOrderResult } from "./commerceTypes";
 
 /**
  * Server-only cookie sessions. There's no DB in this project (household data
@@ -21,6 +22,13 @@ export interface PlatformSession {
    *  track_order requires them. Captured client-side (browser geolocation)
    *  when the user selects an address, if they grant permission. */
   addressCoords?: { lat: number; lng: number };
+  /** Caches the most recent checkout result per household+platform so a
+   *  retried request carrying the same client-generated idempotency key
+   *  (double-click, network retry, resend after a lost response) returns the
+   *  already-placed order instead of calling checkout on the upstream
+   *  platform a second time. Only the single most recent attempt needs to be
+   *  remembered — a genuinely new order always carries a different key. */
+  lastCheckout?: { idempotencyKey: string; order: PlatformOrderResult };
 }
 
 interface CommerceSessionData {

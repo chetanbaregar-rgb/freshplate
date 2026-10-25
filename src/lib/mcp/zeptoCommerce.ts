@@ -71,11 +71,16 @@ function extractCartItems(raw: Json): Json[] {
 
 function normalizeCart(raw: Json): Cart {
   const lines: CartLine[] = extractCartItems(raw).map((i: Json) => {
-    const price = typeof i.price === "number" ? i.price / 100 : 0;
+    // The cart total is derived by summing line prices below, so a line with
+    // a missing/malformed price can't be defaulted to 0 without silently
+    // understating the cart total shown to the user.
+    if (typeof i.price !== "number") {
+      throw new Error("Zepto did not return a valid cart total — refusing to show a possibly-wrong amount");
+    }
     return {
       name: i.name ?? i.label ?? "Item",
       quantity: i.quantity ?? 0,
-      price,
+      price: i.price / 100,
       platformRef: {
         productVariantId: i.productVariantId ?? i.variantId,
         storeProductId: i.storeProductId,
@@ -175,10 +180,13 @@ async function checkout(ctx: McpContext, opts: CheckoutOptions): Promise<Platfor
       confirmOrder: true,
       riderTip: opts.riderTip ?? 0,
     })) as Json;
+    if (typeof placed?.total !== "number") {
+      throw new Error("Zepto did not return a valid order total — refusing to show a possibly-wrong amount");
+    }
     return {
       id: String(placed?.orderId ?? placed?.order_id ?? placed?.id ?? `zepto-${Date.now()}`),
       status: String(placed?.status ?? "placed"),
-      totalAmount: typeof placed?.total === "number" ? placed.total / 100 : undefined,
+      totalAmount: placed.total / 100,
       placedAt: new Date().toISOString(),
     };
   });

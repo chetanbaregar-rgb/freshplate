@@ -1,7 +1,8 @@
 import { NextRequest, NextResponse } from "next/server";
 import { z } from "zod";
-import { getPlatformSession, setPlatformSession } from "@/lib/mcp/session";
+import { getPlatformSession, setPlatformSession, clearPlatformSession } from "@/lib/mcp/session";
 import { getCommerceModule, getMcpEndpoint, isPlatform } from "@/lib/mcp/registry";
+import { getOAuthConfig, refreshAccessToken } from "@/lib/mcp/oauth";
 import type { CartLineInput, McpContext } from "@/lib/mcp/commerceTypes";
 
 /**
@@ -32,7 +33,12 @@ const actionSchema = z.discriminatedUnion("action", [
   z.object({ action: z.literal("cart.get") }),
   z.object({ action: z.literal("cart.update"), lines: z.array(cartLineSchema).min(1) }),
   z.object({ action: z.literal("cart.clear") }),
-  z.object({ action: z.literal("checkout"), addressId: z.string().min(1), riderTip: z.number().optional() }),
+  z.object({
+    action: z.literal("checkout"),
+    addressId: z.string().min(1),
+    riderTip: z.number().optional(),
+    idempotencyKey: z.string().min(1).optional(),
+  }),
   z.object({ action: z.literal("orders.history") }),
   z.object({ action: z.literal("orders.track"), orderId: z.string().min(1) }),
   z.object({ action: z.literal("items.frequent") }),
@@ -44,9 +50,32 @@ export async function POST(request: NextRequest, { params }: { params: Promise<{
     return NextResponse.json({ error: `Unknown platform "${platform}"` }, { status: 404 });
   }
 
-  const session = await getPlatformSession(platform);
+  let session = await getPlatformSession(platform);
   if (!session?.accessToken) {
     return NextResponse.json({ error: "not_connected" }, { status: 401 });
+  }
+
+  // Proactively refresh within 60s of expiry (rather than only after an
+  // upstream auth failure) so a mid-session request doesn't fail with a
+  // confusing 502 just because the access token happened to lapse.
+  if (session.expiresAt && session.expiresAt < Date.now() + 60_000 && session.refreshToken) {
+    try {
+      const config = getOAuthConfig(platform);
+      const newTokens = await refreshAccessToken(config, session.refreshToken);
+      session = {
+        ...session,
+        accessToken: newTokens.access_token,
+        refreshToken: newTokens.refresh_token ?? session.refreshToken,
+        expiresAt: newTokens.expires_in ? Date.now() + newTokens.expires_in * 1000 : undefined,
+      };
+      await setPlatformSession(platform, session);
+    } catch {
+      // Refresh token is also expired/revoked — there's no way to recover
+      // this session server-side. Clear it so the client sees a clean
+      // "reconnect" state instead of repeatedly retrying a dead token.
+      await clearPlatformSession(platform);
+      return NextResponse.json({ error: "reconnect_required" }, { status: 401 });
+    }
   }
 
   let body: unknown;
@@ -100,11 +129,22 @@ export async function POST(request: NextRequest, { params }: { params: Promise<{
         return NextResponse.json({ ok: true });
 
       case "checkout": {
+        // A retry (double-click, timeout-then-resend, lost response) carries
+        // the same client-generated idempotencyKey as the original attempt —
+        // recognize it and return the already-placed order instead of
+        // calling checkout on the upstream platform a second time and
+        // risking a real, binding duplicate order.
+        if (input.idempotencyKey && session.lastCheckout?.idempotencyKey === input.idempotencyKey) {
+          return NextResponse.json({ order: session.lastCheckout.order });
+        }
         const order = await commerce.checkout(ctx, {
           addressId: input.addressId,
           paymentMethod: "cod",
           riderTip: input.riderTip,
         });
+        if (input.idempotencyKey) {
+          await setPlatformSession(platform, { ...session, lastCheckout: { idempotencyKey: input.idempotencyKey, order } });
+        }
         return NextResponse.json({ order });
       }
 
