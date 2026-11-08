@@ -1,5 +1,5 @@
 import { beforeEach, describe, expect, it } from "vitest";
-import { dropFakeOrders, useAppStore } from "./store";
+import { useAppStore } from "./store";
 import { findConflicts, avoidListFor } from "./allergens";
 import { getRecipeById, RECIPES } from "./recipes";
 import { household, meal, member, pantryItem, plan } from "@/test/fixtures";
@@ -14,12 +14,12 @@ const withoutPeanuts = RECIPES.find((r) => findConflicts(r, ["peanut"]).length =
 beforeEach(reset);
 
 describe("plan generation respects allergies", () => {
-  it("never puts a conflicting recipe in a generated plan", () => {
+  it("never puts a conflicting recipe in a generated plan", async () => {
     const hh = household([member("1", { allergies: ["peanut", "dairy"], dislikes: ["mushroom"] }), member("2", { allergies: ["egg"] })]);
     useAppStore.setState({ household: hh });
     const avoid = avoidListFor(hh.members);
     for (let i = 0; i < 25; i++) {
-      useAppStore.getState().generateWeeklyPlan();
+      await useAppStore.getState().generateWeeklyPlan();
       for (const m of useAppStore.getState().weeklyPlan!.meals) {
         if (!m.recipeId) continue;
         expect(findConflicts(getRecipeById(m.recipeId)!, avoid), `${m.recipeId} conflicts`).toEqual([]);
@@ -27,13 +27,13 @@ describe("plan generation respects allergies", () => {
     }
   });
 
-  it("leaves a slot empty and says so when nothing safe exists", () => {
+  it("leaves a slot empty and says so when nothing safe exists", async () => {
     // Dislike every word in the breakfast recipe names, so no breakfast can be safe.
     const words = RECIPES.filter((r) => r.mealType.includes("breakfast"))
       .flatMap((r) => r.name.toLowerCase().split(/[^a-z]+/))
       .filter((w) => w.length > 3);
     useAppStore.setState({ household: household([member("1", { dislikes: words })]) });
-    useAppStore.getState().generateWeeklyPlan();
+    await useAppStore.getState().generateWeeklyPlan();
     const s = useAppStore.getState();
     const breakfasts = s.weeklyPlan!.meals.filter((m) => m.mealType === "breakfast");
     expect(breakfasts).toHaveLength(7);
@@ -134,27 +134,11 @@ describe("markMealCooked", () => {
   });
 });
 
-describe("no fake ordering", () => {
-  it("has no placeOrder action or orders list", () => {
-    const state = useAppStore.getState() as unknown as Record<string, unknown>;
-    expect(state).not.toHaveProperty("placeOrder");
-    expect(state).not.toHaveProperty("orders");
-  });
-
-  it("dropFakeOrders removes saved orders and keeps everything else", () => {
-    const saved = { household: { id: "h" }, pantry: [1], orders: [{ id: "ORD-1", status: "placed" }] };
-    expect(dropFakeOrders(saved)).toEqual({ household: { id: "h" }, pantry: [1] });
-  });
-
-  it("clears orders left in browser storage by the old version when the app loads", async () => {
-    localStorage.setItem(
-      "freshplate-store",
-      JSON.stringify({
-        version: 0,
-        state: { household: null, pantry: [], usedRecipeHistory: [], orders: [{ id: "ORD-1", status: "placed", totalAmount: 650 }] },
-      }),
-    );
-    await useAppStore.persist.rehydrate();
-    expect(useAppStore.getState()).not.toHaveProperty("orders");
+describe("saved state", () => {
+  it("persists placed orders, so a reload does not lose them", () => {
+    const order = { id: "ORD-1", platform: "zepto" as const, planId: "p", items: [], status: "placed" as const, placedAt: "2000-01-01T00:00:00.000Z", totalAmount: 100 };
+    useAppStore.setState({ orders: [order] });
+    const saved = JSON.parse(localStorage.getItem("freshplate-store")!);
+    expect(saved.state.orders).toEqual([order]);
   });
 });

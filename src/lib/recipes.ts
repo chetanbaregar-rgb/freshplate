@@ -1,7 +1,13 @@
-import type { Recipe } from "./types";
-import { findConflicts } from "./allergens";
+import type { Recipe, Ingredient, Household, DietType, HealthGoal } from "./types";
+import { avoidListFor, findConflicts } from "./allergens";
+import { NORTH_RECIPES } from "./recipes/north";
+import { WEST_RECIPES } from "./recipes/west";
+import { SOUTH_RECIPES } from "./recipes/south";
+import { EAST_RECIPES } from "./recipes/east";
+import { CENTRAL_RECIPES } from "./recipes/central";
+import { NORTHEAST_RECIPES } from "./recipes/northeast";
 
-export const RECIPES: Recipe[] = [
+const CORE_RECIPES: Recipe[] = [
   // BREAKFAST
   {
     id: "poha",
@@ -636,8 +642,38 @@ export const RECIPES: Recipe[] = [
   },
 ];
 
+// Statewide regional library (see recipes.md for the full researched knowledge base
+// this was generated from) — one breakfast/lunch/snack/dinner recipe per state/UT
+// across six culinary zones, on top of the hand-curated CORE_RECIPES above.
+export const RECIPES: Recipe[] = [
+  ...CORE_RECIPES,
+  ...NORTH_RECIPES,
+  ...WEST_RECIPES,
+  ...SOUTH_RECIPES,
+  ...EAST_RECIPES,
+  ...CENTRAL_RECIPES,
+  ...NORTHEAST_RECIPES,
+];
+
 export function getRecipeById(id: string): Recipe | undefined {
   return RECIPES.find((r) => r.id === id);
+}
+
+let ingredientIndex: Map<string, Ingredient> | null = null;
+
+/** Ingredient ids are only unique within a recipe (e.g. "onion", "onion2",
+ *  "onion3" across different recipes) — this looks up by that scoped id, not
+ *  by ingredient name, so pass the same id ShoppingItem.ingredientId carries. */
+export function getIngredientById(id: string): Ingredient | undefined {
+  if (!ingredientIndex) {
+    ingredientIndex = new Map();
+    for (const recipe of RECIPES) {
+      for (const ingredient of recipe.ingredients) {
+        if (!ingredientIndex.has(ingredient.id)) ingredientIndex.set(ingredient.id, ingredient);
+      }
+    }
+  }
+  return ingredientIndex.get(id);
 }
 
 export function filterRecipes(params: {
@@ -646,16 +682,65 @@ export function filterRecipes(params: {
   goalTags?: string[];
   state?: string;
   excludeIds?: string[];
-  /** Allergies and dislikes (preset keys or free text); recipes that conflict are never returned. */
-  avoid?: string[];
+  /** Allergies and dislikes (preset keys like "peanut", or free text) — a hard safety
+   *  filter, not a preference weight. Matched as whole words against the recipe's name,
+   *  description, ingredients (and their search terms) and steps; see `findConflicts`. */
+  excludeIngredientTerms?: string[];
 }): Recipe[] {
   return RECIPES.filter((r) => {
     if (params.dietType === "veg" && r.dietType !== "veg") return false;
     if (params.dietType === "egg" && r.dietType === "nonveg") return false;
     if (params.mealType && !r.mealType.includes(params.mealType as never)) return false;
     if (params.goalTags?.length && !params.goalTags.some((g) => r.goalTags.includes(g as never))) return false;
+    if (params.state && !r.cuisineRegion.includes(params.state) && !r.cuisineRegion.includes("Pan-India")) return false;
     if (params.excludeIds?.includes(r.id)) return false;
-    if (params.avoid?.length && findConflicts(r, params.avoid).length > 0) return false;
+    if (params.excludeIngredientTerms?.length && findConflicts(r, params.excludeIngredientTerms).length > 0) {
+      return false;
+    }
     return true;
   });
+}
+
+const DIET_RESTRICTIVENESS: Record<DietType, number> = { veg: 0, egg: 1, nonveg: 2 };
+
+/** Most-restrictive diet across the household default and any member's
+ *  per-member override — a household default of "nonveg" with one vegetarian
+ *  member must not serve that member meat. Shared meals mean everyone eats
+ *  to the strictest requirement present, rather than the override being
+ *  silently ignored. */
+export function effectiveDietType(household: Household): DietType {
+  return household.members.reduce(
+    (strictest, m) =>
+      m.dietOverride && DIET_RESTRICTIVENESS[m.dietOverride] < DIET_RESTRICTIVENESS[strictest]
+        ? m.dietOverride
+        : strictest,
+    household.dietType
+  );
+}
+
+/** Union of every household member's allergies + dislikes, normalized for
+ *  use as `filterRecipes`'s `excludeIngredientTerms` (see `avoidListFor`). Allergies are a safety
+ *  requirement, so this is always a hard exclusion, never a soft preference. */
+export function excludedIngredientTerms(household: Household): string[] {
+  return avoidListFor(household.members);
+}
+
+/** Every distinct health goal represented in the household — used so plan
+ *  generation and swap suggestions weigh/match against everyone eating the
+ *  meal, not just the first member added. */
+export function householdGoals(household: Household): HealthGoal[] {
+  const goals = new Set(household.members.map((m) => m.healthGoal));
+  return goals.size > 0 ? Array.from(goals) : ["maintenance"];
+}
+
+/** Best-effort category lookup for an ingredient name we don't have a
+ *  recipe-authored Ingredient record for (e.g. a delivered order line item
+ *  being added back into the pantry) — falls back to "other". */
+export function getIngredientCategoryByName(name: string): Ingredient["category"] {
+  const key = name.trim().toLowerCase();
+  for (const recipe of RECIPES) {
+    const match = recipe.ingredients.find((i) => i.name.trim().toLowerCase() === key);
+    if (match) return match.category;
+  }
+  return "other";
 }

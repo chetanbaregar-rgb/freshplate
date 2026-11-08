@@ -19,6 +19,10 @@ export interface Member {
   name: string;
   age: number;
   gender: Gender;
+  /** Optional — falls back to a population-average estimate by gender when
+   *  absent (e.g. members created before this field existed). */
+  weightKg?: number;
+  heightCm?: number;
   dietOverride?: DietType;
   healthGoal: HealthGoal;
   activityLevel: ActivityLevel;
@@ -106,6 +110,10 @@ export interface ShoppingItem {
   packSize?: string;
   available?: boolean;
   checked: boolean;
+  /** Opaque platform-specific identifiers (Zepto: productVariantId/storeProductId,
+   *  Instamart: spinId/skuId) needed to add this exact item to cart — populated
+   *  by refreshAvailability() once a live platform search has matched it. */
+  platformRef?: Record<string, unknown>;
 }
 
 export interface PantryItem {

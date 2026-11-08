@@ -7,7 +7,7 @@ const geist = Geist({ subsets: ["latin"], variable: "--font-geist-sans" });
 
 export const metadata: Metadata = {
   title: "FreshPlate — Weekly Meal Planner",
-  description: "Plan your family's weekly meals around fresh ingredients, then get a ready shopping list.",
+  description: "Plan your family's weekly meals around fresh ingredients, then order in one tap from Zepto or Swiggy.",
   manifest: "/manifest.json",
   appleWebApp: { capable: true, statusBarStyle: "default", title: "FreshPlate" },
 };

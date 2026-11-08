@@ -93,7 +93,7 @@ describe("against the real recipe list", () => {
     for (const [key, words] of cases) {
       const flagged = RECIPES.filter((r) => hasIngredient(r, words));
       expect(flagged.length, `expected some real recipes to name ${key}`).toBeGreaterThan(0);
-      const kept = filterRecipes({ dietType: "nonveg", avoid: [key] }).map((r) => r.id);
+      const kept = filterRecipes({ dietType: "nonveg", excludeIngredientTerms: [key] }).map((r) => r.id);
       for (const r of flagged) expect(kept, `${r.id} should be excluded for ${key}`).not.toContain(r.id);
     }
   });
@@ -101,7 +101,7 @@ describe("against the real recipe list", () => {
   it("does not drop eggplant dishes for an egg allergy", () => {
     const eggplant = RECIPES.filter((r) => hasIngredient(r, ["eggplant"]) && !hasIngredient(r, ["eggs?"]));
     expect(eggplant.length).toBeGreaterThan(0);
-    const kept = filterRecipes({ dietType: "nonveg", avoid: ["egg"] }).map((r) => r.id);
+    const kept = filterRecipes({ dietType: "nonveg", excludeIngredientTerms: ["egg"] }).map((r) => r.id);
     for (const r of eggplant) expect(kept).toContain(r.id);
   });
 });

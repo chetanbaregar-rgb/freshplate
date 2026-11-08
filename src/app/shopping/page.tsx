@@ -1,11 +1,12 @@
 "use client";
 import { useEffect, useState } from "react";
+import { useRouter } from "next/navigation";
 import { useAppStore } from "@/lib/store";
 import AppShell from "@/components/layout/AppShell";
-import { ShoppingCart, Check, RefreshCw, ChevronDown, ChevronUp, Copy, Info } from "lucide-react";
+import { ShoppingCart, Package, Check, Zap, RefreshCw, ChevronDown, ChevronUp, AlertTriangle, ChefHat } from "lucide-react";
 import { cn, formatCurrency } from "@/lib/utils";
-import { formatShoppingList, quantityToBuy } from "@/lib/shopping";
 import { toast } from "sonner";
+import { useCommerceStatus } from "@/lib/mcp/useCommerceStatus";
 import type { ShoppingItem } from "@/lib/types";
 
 const CATEGORY_LABELS: Record<string, string> = {
@@ -20,8 +21,19 @@ const CATEGORY_LABELS: Record<string, string> = {
 };
 
 export default function ShoppingPage() {
-  const { shoppingList, buildShoppingList, toggleShoppingItem, weeklyPlan } = useAppStore();
+  const router = useRouter();
+  const { household, shoppingList, buildShoppingList, toggleShoppingItem, refreshAvailability, placeOrder, weeklyPlan } =
+    useAppStore();
+  const [platform, setPlatform] = useState<"zepto" | "instamart">("instamart");
   const [collapsedCategories, setCollapsedCategories] = useState<Set<string>>(new Set());
+  const [ordering, setOrdering] = useState(false);
+  const [ordered, setOrdered] = useState(false);
+  const [showConfirm, setShowConfirm] = useState(false);
+  const { status } = useCommerceStatus();
+
+  const isLive = status[platform].connected;
+  const addressId = status[platform].addressId;
+  const addressLabel = status[platform].addressLabel;
 
   useEffect(() => {
     if (shoppingList.length === 0 && weeklyPlan) {
@@ -29,6 +41,11 @@ export default function ShoppingPage() {
     }
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [weeklyPlan?.id]);
+
+  useEffect(() => {
+    if (weeklyPlan) refreshAvailability(platform);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [platform, weeklyPlan?.id]);
 
   const grouped = shoppingList.reduce<Record<string, ShoppingItem[]>>((acc, item) => {
     const cat = item.category;
@@ -38,6 +55,7 @@ export default function ShoppingPage() {
   }, {});
 
   const unchecked = shoppingList.filter((i) => !i.checked);
+  const totalEstimate = unchecked.reduce((s, i) => s + (i.price ?? 50) * i.qtyToBuy, 0);
   const checkedCount = shoppingList.filter((i) => i.checked).length;
 
   const toggleCategory = (cat: string) => {
@@ -48,15 +66,57 @@ export default function ShoppingPage() {
     });
   };
 
-  const handleCopy = async () => {
-    if (!weeklyPlan) return;
-    try {
-      await navigator.clipboard.writeText(formatShoppingList(shoppingList, weeklyPlan.weekStart));
-      toast.success(`Copied ${unchecked.length} item${unchecked.length === 1 ? "" : "s"} to the clipboard.`);
-    } catch {
-      toast.error("Couldn't copy to the clipboard. Check this browser allows it.");
+  const platformName = platform === "instamart" ? "Swiggy Instamart" : "Zepto";
+
+  const handleOrderClick = () => {
+    if (isLive) {
+      if (!addressId) {
+        toast.error(`Pick a delivery address for ${platformName} in Profile first.`);
+        return;
+      }
+      setShowConfirm(true);
+    } else {
+      void confirmOrder();
     }
   };
+
+  const confirmOrder = async () => {
+    setShowConfirm(false);
+    setOrdering(true);
+    try {
+      // Demo latency now lives in one place — MockCommerceAdapter.checkout()
+      // (see placeOrder in store.ts) — instead of being simulated here too.
+      await placeOrder(platform, addressId ?? undefined);
+      setOrdered(true);
+      toast.success(
+        isLive ? `Real order placed on ${platformName}!` : `Demo order placed on ${platformName}! Delivery in ~25 min.`
+      );
+    } catch (err) {
+      toast.error((err as Error).message || "Order failed — please try again.");
+    } finally {
+      setOrdering(false);
+    }
+  };
+
+  // Deep-linking here without completing onboarding leaves household null
+  // (or incomplete) — bounce to onboarding instead of showing an indefinite loader.
+  useEffect(() => {
+    if (!household?.onboardingComplete) {
+      router.replace("/onboarding");
+    }
+  }, [household, router]);
+
+  if (!household?.onboardingComplete) {
+    return (
+      <div className="flex min-h-screen flex-col items-center justify-center bg-[rgb(252,249,245)] gap-4">
+        <div className="relative w-12 h-12 flex items-center justify-center">
+          <span className="absolute inset-0 rounded-2xl border-4 border-brand-100 border-t-brand-500 animate-spin" />
+          <ChefHat className="w-5 h-5 text-brand-500" />
+        </div>
+        <p className="text-xs font-medium text-muted-foreground animate-pulse">Redirecting…</p>
+      </div>
+    );
+  }
 
   if (!weeklyPlan) {
     return (
@@ -81,23 +141,49 @@ export default function ShoppingPage() {
             </p>
           </div>
           <button
-            onClick={() => { buildShoppingList(); toast.success("List refreshed!"); }}
+            onClick={() => {
+              buildShoppingList();
+              refreshAvailability(platform);
+              setOrdered(false);
+              toast.success("List refreshed!");
+            }}
             className="flex items-center gap-1.5 text-xs border border-gray-200 rounded-xl px-3 py-2 text-gray-500 hover:text-brand-600"
           >
             <RefreshCw className="w-3.5 h-3.5" /> Refresh
           </button>
         </div>
+
+        {/* Platform picker */}
+        <div className="flex gap-2">
+          {(["instamart", "zepto"] as const).map((p) => (
+            <button
+              key={p}
+              onClick={() => setPlatform(p)}
+              className={cn(
+                "flex items-center gap-1.5 px-4 py-2 rounded-xl text-sm font-medium border transition-all",
+                platform === p
+                  ? "border-brand-500 bg-brand-50 text-brand-700"
+                  : "border-gray-200 text-gray-500 hover:border-gray-300"
+              )}
+            >
+              {p === "instamart" ? (
+                <><Package className="w-3.5 h-3.5" /> Instamart</>
+              ) : (
+                <><Zap className="w-3.5 h-3.5" /> Zepto</>
+              )}
+            </button>
+          ))}
+        </div>
+        <p className="text-[11px] mt-1.5">
+          {isLive ? (
+            <span className="text-green-700 font-medium">● Live pricing{addressLabel ? ` · ${addressLabel}` : ""}</span>
+          ) : (
+            <span className="text-gray-400">● Demo pricing — connect {platformName} in Profile for live data</span>
+          )}
+        </p>
       </div>
 
       <div className="flex-1 overflow-auto p-4 lg:px-8 space-y-3 pb-32">
-        <div role="note" className="flex items-start gap-3 bg-amber-50 border border-amber-200 rounded-2xl p-4 text-sm text-amber-900">
-          <Info className="w-4 h-4 mt-0.5 flex-shrink-0" />
-          <p>
-            <span className="font-semibold">Demo mode.</span> FreshPlate isn&apos;t connected to Zepto or Swiggy Instamart yet,
-            so it can&apos;t show prices or place an order. Copy this list to shop on an app or at the store.
-          </p>
-        </div>
-
         {Object.entries(grouped).map(([cat, items]) => {
           const collapsed = collapsedCategories.has(cat);
           const allChecked = items.every((i) => i.checked);
@@ -130,6 +216,7 @@ export default function ShoppingPage() {
                     >
                       <button
                         onClick={() => toggleShoppingItem(item.ingredientId)}
+                        aria-label={item.checked ? `Mark ${item.name} as not bought` : `Mark ${item.name} as bought`}
                         className={cn(
                           "w-5 h-5 rounded-md border-2 flex items-center justify-center flex-shrink-0 transition-colors",
                           item.checked
@@ -142,13 +229,22 @@ export default function ShoppingPage() {
                       <div className="flex-1 min-w-0">
                         <p className={cn("text-sm font-medium", item.checked && "line-through")}>{item.name}</p>
                         <p className="text-xs text-muted-foreground">
-                          Need {quantityToBuy(item)}
+                          Need {Math.ceil(item.qtyToBuy)} {item.unit}
                           {item.qtyInStock > 0 && ` · ${item.qtyInStock} in stock`}
                         </p>
                       </div>
                       <div className="text-right flex-shrink-0">
-                        {item.price !== undefined && (
-                          <p className="text-sm font-semibold text-brand-600">{formatCurrency(item.price)}</p>
+                        {item.price ? (
+                          <p className="text-sm font-semibold text-brand-600 flex items-center justify-end gap-1.5">
+                            {formatCurrency(item.price)}
+                            {!isLive && (
+                              <span className="text-[9px] font-semibold text-gray-400 bg-gray-100 px-1.5 py-0.5 rounded-full" title="Sample price — connect a platform in Profile for a real quote">
+                                demo
+                              </span>
+                            )}
+                          </p>
+                        ) : (
+                          <span className="text-xs text-amber-600 bg-amber-50 px-2 py-0.5 rounded-full">checking…</span>
                         )}
                         {item.packSize && <p className="text-[10px] text-muted-foreground">{item.packSize}</p>}
                       </div>
@@ -168,20 +264,84 @@ export default function ShoppingPage() {
         )}
       </div>
 
-      {/* Sticky footer */}
+      {/* Sticky order footer */}
       {unchecked.length > 0 && (
         <div className="fixed bottom-16 lg:bottom-0 left-0 lg:left-64 right-0 bg-white border-t border-[rgb(235,227,215)] p-4 safe-bottom">
           <div className="max-w-2xl mx-auto flex items-center gap-3">
             <div className="flex-1">
-              <p className="text-sm font-semibold">{unchecked.length} item{unchecked.length === 1 ? "" : "s"} to buy</p>
-              <p className="text-xs text-muted-foreground">Demo mode · no prices, no ordering</p>
+              <p className="text-sm font-semibold">{unchecked.length} items to order</p>
+              <p className="text-xs text-muted-foreground">Est. {formatCurrency(totalEstimate)} · delivered in ~25 min</p>
             </div>
-            <button
-              onClick={handleCopy}
-              className="flex items-center gap-2 bg-brand-500 text-white px-5 py-3 rounded-xl text-sm font-semibold hover:bg-brand-600 transition-colors"
-            >
-              <Copy className="w-4 h-4" /> Copy list
-            </button>
+            {ordered ? (
+              <div className="flex items-center gap-2 bg-green-50 text-green-700 px-4 py-3 rounded-xl text-sm font-medium">
+                <Check className="w-4 h-4" /> Ordered!
+              </div>
+            ) : (
+              <button
+                onClick={handleOrderClick}
+                disabled={ordering}
+                className="flex items-center gap-2 bg-brand-500 text-white px-5 py-3 rounded-xl text-sm font-semibold hover:bg-brand-600 disabled:opacity-60 transition-colors"
+              >
+                {ordering ? (
+                  <><RefreshCw className="w-4 h-4 animate-spin" /> Placing…</>
+                ) : (
+                  <>{platform === "instamart" ? <Package className="w-4 h-4" /> : <Zap className="w-4 h-4" />} Order Now</>
+                )}
+              </button>
+            )}
+          </div>
+        </div>
+      )}
+
+      {/* Binding-order confirmation — only shown for live (real, paid) checkout */}
+      {showConfirm && (
+        <div className="fixed inset-0 z-50 flex items-end lg:items-center justify-center">
+          <div className="absolute inset-0 bg-black/40 backdrop-blur-sm" onClick={() => setShowConfirm(false)} />
+          <div className="relative bg-white w-full lg:max-w-md rounded-t-3xl lg:rounded-3xl p-6 z-10 space-y-4">
+            <div className="flex items-center gap-2 text-amber-600">
+              <AlertTriangle className="w-5 h-5" />
+              <h3 className="text-base font-bold text-gray-900">Confirm real order</h3>
+            </div>
+            <p className="text-sm text-muted-foreground">
+              This places a real, binding order on your connected {platformName} account — payment and delivery
+              happen for real, not a demo.
+            </p>
+            <div className="bg-gray-50 rounded-xl p-3 text-sm space-y-1.5">
+              <div className="flex justify-between">
+                <span className="text-muted-foreground">Deliver to</span>
+                <span className="font-medium">{addressLabel ?? "—"}</span>
+              </div>
+              <div className="flex justify-between">
+                <span className="text-muted-foreground">Items</span>
+                <span className="font-medium">{unchecked.length}</span>
+              </div>
+              <div className="flex justify-between">
+                <span className="text-muted-foreground">Est. total</span>
+                <span className="font-medium">{formatCurrency(totalEstimate)}</span>
+              </div>
+              <div className="flex justify-between">
+                <span className="text-muted-foreground">Payment</span>
+                <span className="font-medium">Cash on Delivery</span>
+              </div>
+            </div>
+            <p className="text-[11px] text-muted-foreground">
+              Online/UPI payment isn&apos;t wired up yet — every live order goes out as Cash on
+              Delivery. Quantities are also rounded up to whole packs where a partial pack isn&apos;t sold.
+            </p>
+            <div className="flex gap-3">
+              <button
+                onClick={() => setShowConfirm(false)}
+                className="flex-1 py-3 rounded-xl border border-gray-200 text-sm font-medium hover:bg-gray-50"
+              >
+                Cancel
+              </button>
+              <button
+                onClick={confirmOrder}
+                className="flex-1 py-3 rounded-xl bg-brand-500 text-white text-sm font-semibold hover:bg-brand-600"
+              >
+                Place real order
+              </button>
+            </div>
           </div>
         </div>
       )}

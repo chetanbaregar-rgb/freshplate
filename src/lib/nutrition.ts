@@ -26,12 +26,21 @@ const GOAL_PROTEIN_MULTIPLIER: Record<HealthGoal, number> = {
   maintenance: 1.2,
 };
 
+// Population-average fallbacks for members created before weight/height were
+// collected, or who skip the (optional) fields — Mifflin-St Jeor still needs
+// *some* value, so this is a best-effort estimate, not a real measurement.
+const DEFAULT_WEIGHT_KG: Record<Member["gender"], number> = { male: 70, female: 60, other: 65 };
+const DEFAULT_HEIGHT_CM: Record<Member["gender"], number> = { male: 170, female: 160, other: 165 };
+const GENDER_BMR_CONSTANT: Record<Member["gender"], number> = { male: 5, female: -161, other: -78 };
+
+function memberWeightKg(member: Member): number {
+  return member.weightKg ?? DEFAULT_WEIGHT_KG[member.gender];
+}
+
 function bmr(member: Member): number {
-  const base =
-    member.gender === "male"
-      ? 10 * 70 + 6.25 * 170 - 5 * member.age + 5
-      : 10 * 60 + 6.25 * 160 - 5 * member.age - 161;
-  return base;
+  const weightKg = memberWeightKg(member);
+  const heightCm = member.heightCm ?? DEFAULT_HEIGHT_CM[member.gender];
+  return 10 * weightKg + 6.25 * heightCm - 5 * member.age + GENDER_BMR_CONSTANT[member.gender];
 }
 
 export function computeTarget(member: Member): NutritionTarget {
@@ -40,7 +49,7 @@ export function computeTarget(member: Member): NutritionTarget {
   const adjustment = GOAL_CALORIE_ADJUSTMENT[member.healthGoal];
   const calories = Math.round(tdee * (1 + adjustment));
 
-  const weightKg = member.gender === "male" ? 70 : 60;
+  const weightKg = memberWeightKg(member);
   const proteinG = Math.round(weightKg * GOAL_PROTEIN_MULTIPLIER[member.healthGoal]);
   const fatG = Math.round((calories * 0.28) / 9);
   const carbsG = Math.round((calories - proteinG * 4 - fatG * 9) / 4);
