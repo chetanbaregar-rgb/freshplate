@@ -4,6 +4,8 @@ import { useRouter } from "next/navigation";
 import { motion, AnimatePresence } from "framer-motion";
 import { ChefHat, ArrowRight, ArrowLeft, Plus, Trash2, Check } from "lucide-react";
 import { useAppStore } from "@/lib/store";
+import AllergyPicker from "@/components/AllergyPicker";
+import { avoidLabel } from "@/lib/allergens";
 import { INDIAN_STATES, GOAL_LABELS, DIET_LABELS } from "@/lib/utils";
 import type { Member, DietType, HealthGoal, Gender, ActivityLevel } from "@/lib/types";
 
@@ -33,6 +35,9 @@ export default function OnboardingPage() {
     activityLevel: "moderate", allergies: [], dislikes: [],
   });
 
+  // Bumped after each member is added so the allergy boxes start empty again.
+  const [memberFormKey, setMemberFormKey] = useState(0);
+
   // Step 5: location
   const [address, setAddress] = useState("");
 
@@ -50,11 +55,12 @@ export default function OnboardingPage() {
       gender: (editingMember.gender ?? "female") as Gender,
       healthGoal: (editingMember.healthGoal ?? "maintenance") as HealthGoal,
       activityLevel: (editingMember.activityLevel ?? "moderate") as ActivityLevel,
-      allergies: [],
-      dislikes: [],
+      allergies: editingMember.allergies ?? [],
+      dislikes: editingMember.dislikes ?? [],
     };
     setMembers((prev) => [...prev, m]);
     setEditingMember({ name: "", age: 30, gender: "female", healthGoal: "maintenance", activityLevel: "moderate", allergies: [], dislikes: [] });
+    setMemberFormKey((k) => k + 1);
   };
 
   const handleFinish = () => {
@@ -212,6 +218,12 @@ export default function OnboardingPage() {
                 >
                   {Object.entries(GOAL_LABELS).map(([v, l]) => <option key={v} value={v}>{l}</option>)}
                 </select>
+                <AllergyPicker
+                  key={memberFormKey}
+                  allergies={editingMember.allergies ?? []}
+                  dislikes={editingMember.dislikes ?? []}
+                  onChange={(v) => setEditingMember((p) => ({ ...p, ...v }))}
+                />
                 <button
                   onClick={handleAddMember}
                   disabled={!editingMember.name}
@@ -293,6 +305,11 @@ export default function OnboardingPage() {
                         <div key={m.id} className="flex items-center justify-between">
                           <span className="text-sm font-medium">{m.name} ({m.age})</span>
                           <span className="text-xs bg-sage-100 text-sage-700 px-2 py-1 rounded-full">{GOAL_LABELS[m.healthGoal]}</span>
+                        </div>
+                      ))}
+                      {members.filter((m) => m.allergies.length > 0).map((m) => (
+                        <div key={`a-${m.id}`} className="text-xs text-red-700">
+                          {m.name}: no {m.allergies.map(avoidLabel).join(", ")}
                         </div>
                       ))}
                     </div>

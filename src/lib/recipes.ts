@@ -1,4 +1,5 @@
 import type { Recipe } from "./types";
+import { findConflicts } from "./allergens";
 
 export const RECIPES: Recipe[] = [
   // BREAKFAST
@@ -645,6 +646,8 @@ export function filterRecipes(params: {
   goalTags?: string[];
   state?: string;
   excludeIds?: string[];
+  /** Allergies and dislikes (preset keys or free text); recipes that conflict are never returned. */
+  avoid?: string[];
 }): Recipe[] {
   return RECIPES.filter((r) => {
     if (params.dietType === "veg" && r.dietType !== "veg") return false;
@@ -652,6 +655,7 @@ export function filterRecipes(params: {
     if (params.mealType && !r.mealType.includes(params.mealType as never)) return false;
     if (params.goalTags?.length && !params.goalTags.some((g) => r.goalTags.includes(g as never))) return false;
     if (params.excludeIds?.includes(r.id)) return false;
+    if (params.avoid?.length && findConflicts(r, params.avoid).length > 0) return false;
     return true;
   });
 }

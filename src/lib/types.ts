@@ -81,6 +81,8 @@ export interface PlanMeal {
   recipeId: string | null;
   isOrderIn: boolean;
   locked: boolean;
+  /** Set once the meal is marked cooked, so the pantry is only reduced once. */
+  cooked?: boolean;
   servingsMultiplier: number;
 }
 

@@ -2,6 +2,7 @@
 import { useState } from "react";
 import { useAppStore } from "@/lib/store";
 import { getRecipeById, filterRecipes } from "@/lib/recipes";
+import { avoidListFor } from "@/lib/allergens";
 import { DAYS, DAYS_FULL, MEAL_LABELS } from "@/lib/utils";
 import { cn } from "@/lib/utils";
 import AppShell from "@/components/layout/AppShell";
@@ -12,7 +13,7 @@ import { toast } from "sonner";
 const MEAL_TYPES = ["breakfast", "lunch", "dinner"] as const;
 
 export default function CalendarPage() {
-  const { weeklyPlan, household, generateWeeklyPlan, swapMeal, lockMeal, toggleOrderIn, buildShoppingList, markMealCooked } = useAppStore();
+  const { weeklyPlan, household, generateWeeklyPlan, swapMeal, lockMeal, toggleOrderIn, buildShoppingList, markMealCooked, planNotice, dismissPlanNotice } = useAppStore();
   const [selectedDay, setSelectedDay] = useState(0);
   const [swapTarget, setSwapTarget] = useState<{ day: number; mealType: string } | null>(null);
   const [detailMeal, setDetailMeal] = useState<{ day: number; mealType: string } | null>(null);
@@ -51,6 +52,7 @@ export default function CalendarPage() {
         dietType: household.dietType,
         mealType: swapTarget.mealType,
         goalTags: [household.members[0]?.healthGoal ?? "maintenance"],
+        avoid: avoidListFor(household.members),
         excludeIds: [
           weeklyPlan.meals.find(
             (m) => m.day === swapTarget.day && m.mealType === swapTarget.mealType
@@ -117,6 +119,15 @@ export default function CalendarPage() {
         </div>
       </div>
 
+      {planNotice && (
+        <div role="status" className="flex items-start gap-3 bg-amber-50 border-b border-amber-200 px-4 py-3 lg:px-8 text-sm text-amber-900">
+          <p className="flex-1">{planNotice}</p>
+          <button onClick={dismissPlanNotice} aria-label="Dismiss" className="p-1 text-amber-700 hover:text-amber-900">
+            <X className="w-4 h-4" />
+          </button>
+        </div>
+      )}
+
       {/* Desktop: 7-column grid; Mobile: single day */}
       <div className="hidden lg:grid grid-cols-7 gap-0 flex-1 overflow-auto">
         {DAYS.map((d, day) => (
@@ -139,7 +150,7 @@ export default function CalendarPage() {
                     onDetail={() => setDetailMeal({ day, mealType: mt })}
                     onSwap={() => setSwapTarget({ day, mealType: mt })}
                     onLock={() => lockMeal(day, mt)}
-                    onCooked={() => { markMealCooked(day, mt); toast.success("Meal marked as cooked!"); }}
+                    onCooked={() => { if (meal?.cooked) return; markMealCooked(day, mt); toast.success("Meal marked as cooked!"); }}
                     onOrderIn={() => toggleOrderIn(day, mt)}
                   />
                 );
@@ -164,7 +175,7 @@ export default function CalendarPage() {
               onDetail={() => setDetailMeal({ day: selectedDay, mealType: mt })}
               onSwap={() => setSwapTarget({ day: selectedDay, mealType: mt })}
               onLock={() => lockMeal(selectedDay, mt)}
-              onCooked={() => { markMealCooked(selectedDay, mt); toast.success("Meal marked as cooked! Pantry updated."); }}
+              onCooked={() => { if (meal?.cooked) return; markMealCooked(selectedDay, mt); toast.success("Meal marked as cooked! Pantry updated."); }}
               onOrderIn={() => toggleOrderIn(selectedDay, mt)}
             />
           );
@@ -320,7 +331,7 @@ function MealCard({
             {meal?.locked ? <><Unlock className="w-3 h-3" /> Unlock</> : <><Lock className="w-3 h-3" /> Lock</>}
           </ActionBtn>
           <ActionBtn onClick={(e) => { e.stopPropagation(); onCooked(); }}>
-            <Check className="w-3 h-3" /> Cooked
+            <Check className="w-3 h-3" /> {meal?.cooked ? "Cooked ✓" : "Cooked"}
           </ActionBtn>
           {mealType === "dinner" && (
             <ActionBtn onClick={(e) => { e.stopPropagation(); onOrderIn(); }}>🛵 Order In</ActionBtn>

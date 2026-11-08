@@ -3,6 +3,8 @@ import { useState } from "react";
 import { useRouter } from "next/navigation";
 import { useAppStore } from "@/lib/store";
 import AppShell from "@/components/layout/AppShell";
+import AllergyPicker from "@/components/AllergyPicker";
+import { avoidLabel } from "@/lib/allergens";
 import { GOAL_LABELS, DIET_LABELS } from "@/lib/utils";
 import { goalColor, computeTarget } from "@/lib/nutrition";
 import { User, Plus, Trash2, ChevronRight, Zap, Package, RotateCcw, X } from "lucide-react";
@@ -12,8 +14,9 @@ import type { Member, DietType, HealthGoal, Gender, ActivityLevel } from "@/lib/
 
 export default function ProfilePage() {
   const router = useRouter();
-  const { household, addMember, removeMember, updateHousehold, generateWeeklyPlan } = useAppStore();
+  const { household, addMember, updateMember, removeMember, updateHousehold, generateWeeklyPlan } = useAppStore();
   const [showAddMember, setShowAddMember] = useState(false);
+  const [editingAllergiesFor, setEditingAllergiesFor] = useState<string | null>(null);
   const [newMember, setNewMember] = useState<Partial<Member>>({
     name: "", age: 25, gender: "female", healthGoal: "maintenance", activityLevel: "moderate", allergies: [], dislikes: [],
   });
@@ -29,12 +32,22 @@ export default function ProfilePage() {
       gender: newMember.gender as Gender ?? "female",
       healthGoal: newMember.healthGoal as HealthGoal ?? "maintenance",
       activityLevel: newMember.activityLevel as ActivityLevel ?? "moderate",
-      allergies: [],
-      dislikes: [],
+      allergies: newMember.allergies ?? [],
+      dislikes: newMember.dislikes ?? [],
     });
     setShowAddMember(false);
     setNewMember({ name: "", age: 25, gender: "female", healthGoal: "maintenance", activityLevel: "moderate", allergies: [], dislikes: [] });
     toast.success("Member added! Regenerate your plan to include them.");
+    const notice = useAppStore.getState().planNotice;
+    if (notice) toast.warning(notice);
+  };
+
+  const handleSaveAllergies = (id: string, v: { allergies: string[]; dislikes: string[] }) => {
+    updateMember(id, v);
+    setEditingAllergiesFor(null);
+    toast.success("Allergies saved.");
+    const notice = useAppStore.getState().planNotice;
+    if (notice) toast.warning(notice);
   };
 
   const handleRestart = () => {
@@ -110,6 +123,37 @@ export default function ProfilePage() {
                         <span className={cn("text-[10px] font-semibold px-2 py-0.5 rounded-full", goalColor(m.healthGoal))}>
                           {GOAL_LABELS[m.healthGoal]}
                         </span>
+                      </div>
+                      <div className="mt-3">
+                        {editingAllergiesFor === m.id ? (
+                          <AllergyEditor
+                            member={m}
+                            onSave={(v) => handleSaveAllergies(m.id, v)}
+                            onCancel={() => setEditingAllergiesFor(null)}
+                          />
+                        ) : (
+                          <div className="flex flex-wrap items-center gap-1.5">
+                            {m.allergies.length === 0 && m.dislikes.length === 0 && (
+                              <span className="text-xs text-muted-foreground">No allergies or dislikes set</span>
+                            )}
+                            {m.allergies.map((a) => (
+                              <span key={`a-${a}`} className="text-[10px] font-semibold px-2 py-0.5 rounded-full bg-red-50 text-red-700">
+                                No {avoidLabel(a)}
+                              </span>
+                            ))}
+                            {m.dislikes.map((d) => (
+                              <span key={`d-${d}`} className="text-[10px] font-medium px-2 py-0.5 rounded-full bg-gray-100 text-gray-600">
+                                Dislikes {d}
+                              </span>
+                            ))}
+                            <button
+                              onClick={() => setEditingAllergiesFor(m.id)}
+                              className="text-xs text-brand-600 font-medium ml-1 py-1"
+                            >
+                              Edit allergies
+                            </button>
+                          </div>
+                        )}
                       </div>
                       <div className="grid grid-cols-3 gap-2 mt-3">
                         <NutriBadge label="Calories" value={`${target.calories}`} unit="kcal" />
@@ -215,6 +259,11 @@ export default function ProfilePage() {
               >
                 {Object.entries(GOAL_LABELS).map(([v, l]) => <option key={v} value={v}>{l}</option>)}
               </select>
+              <AllergyPicker
+                allergies={newMember.allergies ?? []}
+                dislikes={newMember.dislikes ?? []}
+                onChange={(v) => setNewMember((p) => ({ ...p, ...v }))}
+              />
               <button
                 onClick={handleAddMember}
                 disabled={!newMember.name}
@@ -227,6 +276,27 @@ export default function ProfilePage() {
         </div>
       )}
     </AppShell>
+  );
+}
+
+function AllergyEditor({ member, onSave, onCancel }: {
+  member: Member;
+  onSave: (v: { allergies: string[]; dislikes: string[] }) => void;
+  onCancel: () => void;
+}) {
+  const [draft, setDraft] = useState({ allergies: member.allergies, dislikes: member.dislikes });
+  return (
+    <div className="space-y-3">
+      <AllergyPicker allergies={draft.allergies} dislikes={draft.dislikes} onChange={setDraft} />
+      <div className="flex gap-2">
+        <button onClick={() => onSave(draft)} className="flex-1 bg-brand-500 text-white font-semibold py-2.5 rounded-xl text-sm hover:bg-brand-600">
+          Save
+        </button>
+        <button onClick={onCancel} className="px-4 py-2.5 border border-gray-200 rounded-xl text-sm text-gray-600 hover:bg-gray-50">
+          Cancel
+        </button>
+      </div>
+    </div>
   );
 }
 
