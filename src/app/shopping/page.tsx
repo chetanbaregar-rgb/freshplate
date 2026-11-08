@@ -2,8 +2,9 @@
 import { useEffect, useState } from "react";
 import { useAppStore } from "@/lib/store";
 import AppShell from "@/components/layout/AppShell";
-import { ShoppingCart, Package, Check, Zap, RefreshCw, ChevronDown, ChevronUp } from "lucide-react";
+import { ShoppingCart, Check, RefreshCw, ChevronDown, ChevronUp, Copy, Info } from "lucide-react";
 import { cn, formatCurrency } from "@/lib/utils";
+import { formatShoppingList, quantityToBuy } from "@/lib/shopping";
 import { toast } from "sonner";
 import type { ShoppingItem } from "@/lib/types";
 
@@ -19,11 +20,8 @@ const CATEGORY_LABELS: Record<string, string> = {
 };
 
 export default function ShoppingPage() {
-  const { shoppingList, buildShoppingList, toggleShoppingItem, placeOrder, weeklyPlan } = useAppStore();
-  const [platform, setPlatform] = useState<"zepto" | "instamart">("instamart");
+  const { shoppingList, buildShoppingList, toggleShoppingItem, weeklyPlan } = useAppStore();
   const [collapsedCategories, setCollapsedCategories] = useState<Set<string>>(new Set());
-  const [ordering, setOrdering] = useState(false);
-  const [ordered, setOrdered] = useState(false);
 
   useEffect(() => {
     if (shoppingList.length === 0 && weeklyPlan) {
@@ -40,7 +38,6 @@ export default function ShoppingPage() {
   }, {});
 
   const unchecked = shoppingList.filter((i) => !i.checked);
-  const totalEstimate = unchecked.reduce((s, i) => s + (i.price ?? 50) * i.qtyToBuy, 0);
   const checkedCount = shoppingList.filter((i) => i.checked).length;
 
   const toggleCategory = (cat: string) => {
@@ -51,13 +48,14 @@ export default function ShoppingPage() {
     });
   };
 
-  const handleOrder = async () => {
-    setOrdering(true);
-    await new Promise((r) => setTimeout(r, 1500));
-    placeOrder(platform);
-    setOrdering(false);
-    setOrdered(true);
-    toast.success(`Order placed on ${platform === "instamart" ? "Swiggy Instamart" : "Zepto"}! Delivery in ~25 min.`);
+  const handleCopy = async () => {
+    if (!weeklyPlan) return;
+    try {
+      await navigator.clipboard.writeText(formatShoppingList(shoppingList, weeklyPlan.weekStart));
+      toast.success(`Copied ${unchecked.length} item${unchecked.length === 1 ? "" : "s"} to the clipboard.`);
+    } catch {
+      toast.error("Couldn't copy to the clipboard. Check this browser allows it.");
+    }
   };
 
   if (!weeklyPlan) {
@@ -83,37 +81,23 @@ export default function ShoppingPage() {
             </p>
           </div>
           <button
-            onClick={() => { buildShoppingList(); setOrdered(false); toast.success("List refreshed!"); }}
+            onClick={() => { buildShoppingList(); toast.success("List refreshed!"); }}
             className="flex items-center gap-1.5 text-xs border border-gray-200 rounded-xl px-3 py-2 text-gray-500 hover:text-brand-600"
           >
             <RefreshCw className="w-3.5 h-3.5" /> Refresh
           </button>
         </div>
-
-        {/* Platform picker */}
-        <div className="flex gap-2">
-          {(["instamart", "zepto"] as const).map((p) => (
-            <button
-              key={p}
-              onClick={() => setPlatform(p)}
-              className={cn(
-                "flex items-center gap-1.5 px-4 py-2 rounded-xl text-sm font-medium border transition-all",
-                platform === p
-                  ? "border-brand-500 bg-brand-50 text-brand-700"
-                  : "border-gray-200 text-gray-500 hover:border-gray-300"
-              )}
-            >
-              {p === "instamart" ? (
-                <><Package className="w-3.5 h-3.5" /> Instamart</>
-              ) : (
-                <><Zap className="w-3.5 h-3.5" /> Zepto</>
-              )}
-            </button>
-          ))}
-        </div>
       </div>
 
       <div className="flex-1 overflow-auto p-4 lg:px-8 space-y-3 pb-32">
+        <div role="note" className="flex items-start gap-3 bg-amber-50 border border-amber-200 rounded-2xl p-4 text-sm text-amber-900">
+          <Info className="w-4 h-4 mt-0.5 flex-shrink-0" />
+          <p>
+            <span className="font-semibold">Demo mode.</span> FreshPlate isn&apos;t connected to Zepto or Swiggy Instamart yet,
+            so it can&apos;t show prices or place an order. Copy this list to shop on an app or at the store.
+          </p>
+        </div>
+
         {Object.entries(grouped).map(([cat, items]) => {
           const collapsed = collapsedCategories.has(cat);
           const allChecked = items.every((i) => i.checked);
@@ -158,15 +142,13 @@ export default function ShoppingPage() {
                       <div className="flex-1 min-w-0">
                         <p className={cn("text-sm font-medium", item.checked && "line-through")}>{item.name}</p>
                         <p className="text-xs text-muted-foreground">
-                          Need {Math.ceil(item.qtyToBuy)} {item.unit}
+                          Need {quantityToBuy(item)}
                           {item.qtyInStock > 0 && ` · ${item.qtyInStock} in stock`}
                         </p>
                       </div>
                       <div className="text-right flex-shrink-0">
-                        {item.price ? (
+                        {item.price !== undefined && (
                           <p className="text-sm font-semibold text-brand-600">{formatCurrency(item.price)}</p>
-                        ) : (
-                          <span className="text-xs text-amber-600 bg-amber-50 px-2 py-0.5 rounded-full">checking…</span>
                         )}
                         {item.packSize && <p className="text-[10px] text-muted-foreground">{item.packSize}</p>}
                       </div>
@@ -186,31 +168,20 @@ export default function ShoppingPage() {
         )}
       </div>
 
-      {/* Sticky order footer */}
+      {/* Sticky footer */}
       {unchecked.length > 0 && (
         <div className="fixed bottom-16 lg:bottom-0 left-0 lg:left-64 right-0 bg-white border-t border-[rgb(235,227,215)] p-4 safe-bottom">
           <div className="max-w-2xl mx-auto flex items-center gap-3">
             <div className="flex-1">
-              <p className="text-sm font-semibold">{unchecked.length} items to order</p>
-              <p className="text-xs text-muted-foreground">Est. {formatCurrency(totalEstimate)} · delivered in ~25 min</p>
+              <p className="text-sm font-semibold">{unchecked.length} item{unchecked.length === 1 ? "" : "s"} to buy</p>
+              <p className="text-xs text-muted-foreground">Demo mode · no prices, no ordering</p>
             </div>
-            {ordered ? (
-              <div className="flex items-center gap-2 bg-green-50 text-green-700 px-4 py-3 rounded-xl text-sm font-medium">
-                <Check className="w-4 h-4" /> Ordered!
-              </div>
-            ) : (
-              <button
-                onClick={handleOrder}
-                disabled={ordering}
-                className="flex items-center gap-2 bg-brand-500 text-white px-5 py-3 rounded-xl text-sm font-semibold hover:bg-brand-600 disabled:opacity-60 transition-colors"
-              >
-                {ordering ? (
-                  <><RefreshCw className="w-4 h-4 animate-spin" /> Placing…</>
-                ) : (
-                  <>{platform === "instamart" ? <Package className="w-4 h-4" /> : <Zap className="w-4 h-4" />} Order Now</>
-                )}
-              </button>
-            )}
+            <button
+              onClick={handleCopy}
+              className="flex items-center gap-2 bg-brand-500 text-white px-5 py-3 rounded-xl text-sm font-semibold hover:bg-brand-600 transition-colors"
+            >
+              <Copy className="w-4 h-4" /> Copy list
+            </button>
           </div>
         </div>
       )}

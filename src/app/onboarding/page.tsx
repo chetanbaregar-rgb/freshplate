@@ -267,7 +267,7 @@ export default function OnboardingPage() {
 
           {step === 3 && (
             <StepWrapper key="s3" dir={dir}>
-              <StepTitle title="Delivery address" subtitle="FreshPlate checks ingredient availability at your location on Zepto and Swiggy Instamart." />
+              <StepTitle title="Delivery address" subtitle="Used for store availability once Zepto and Swiggy Instamart are connected. For now this is saved on your device only." />
               <div className="space-y-4">
                 <div>
                   <label className="block text-sm font-medium mb-2">Address / Area</label>
@@ -280,7 +280,7 @@ export default function OnboardingPage() {
                 </div>
                 <div className="bg-amber-50 border border-amber-200 rounded-xl p-4 text-sm text-amber-800">
                   <p className="font-medium mb-1">Connect your accounts</p>
-                  <p className="text-xs">You&apos;ll link Zepto and Swiggy accounts in the app to enable live availability and 1-tap ordering. For now we&apos;ll use demo data.</p>
+                  <p className="text-xs">Linking Zepto and Swiggy for live availability and ordering isn&apos;t available yet. FreshPlate can&apos;t place orders or show prices today, but it builds your shopping list so you can shop it yourself.</p>
                 </div>
               </div>
             </StepWrapper>

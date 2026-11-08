@@ -1,5 +1,5 @@
 import { beforeEach, describe, expect, it } from "vitest";
-import { useAppStore } from "./store";
+import { dropFakeOrders, useAppStore } from "./store";
 import { findConflicts, avoidListFor } from "./allergens";
 import { getRecipeById, RECIPES } from "./recipes";
 import { household, meal, member, pantryItem, plan } from "@/test/fixtures";
@@ -131,5 +131,30 @@ describe("markMealCooked", () => {
     useAppStore.getState().swapMeal(0, "lunch", rice.id);
     useAppStore.getState().markMealCooked(0, "lunch");
     expect(useAppStore.getState().pantry[0].quantity).toBe(5000 - 2 * riceQty());
+  });
+});
+
+describe("no fake ordering", () => {
+  it("has no placeOrder action or orders list", () => {
+    const state = useAppStore.getState() as unknown as Record<string, unknown>;
+    expect(state).not.toHaveProperty("placeOrder");
+    expect(state).not.toHaveProperty("orders");
+  });
+
+  it("dropFakeOrders removes saved orders and keeps everything else", () => {
+    const saved = { household: { id: "h" }, pantry: [1], orders: [{ id: "ORD-1", status: "placed" }] };
+    expect(dropFakeOrders(saved)).toEqual({ household: { id: "h" }, pantry: [1] });
+  });
+
+  it("clears orders left in browser storage by the old version when the app loads", async () => {
+    localStorage.setItem(
+      "freshplate-store",
+      JSON.stringify({
+        version: 0,
+        state: { household: null, pantry: [], usedRecipeHistory: [], orders: [{ id: "ORD-1", status: "placed", totalAmount: 650 }] },
+      }),
+    );
+    await useAppStore.persist.rehydrate();
+    expect(useAppStore.getState()).not.toHaveProperty("orders");
   });
 });

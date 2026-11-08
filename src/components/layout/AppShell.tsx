@@ -49,7 +49,7 @@ export default function AppShell({ children }: { children: React.ReactNode }) {
         </nav>
         <div className="p-4 border-t border-[rgb(235,227,215)]">
           <div className="text-xs text-muted-foreground text-center">
-            Powered by Zepto & Swiggy MCPs
+            Demo mode · store ordering not connected yet
           </div>
         </div>
       </aside>

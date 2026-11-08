@@ -22,7 +22,7 @@ const CATEGORY_LABELS: Record<string, string> = {
 const CATEGORIES = Object.keys(CATEGORY_LABELS) as PantryItem["category"][];
 
 export default function PantryPage() {
-  const { pantry, addPantryItem, updatePantryItem, removePantryItem, orders } = useAppStore();
+  const { pantry, addPantryItem, updatePantryItem, removePantryItem } = useAppStore();
   const [showAdd, setShowAdd] = useState(false);
   const [newItem, setNewItem] = useState({
     name: "", quantity: 1, unit: "g", category: "vegetable" as PantryItem["category"], expiryDate: "",
@@ -49,8 +49,6 @@ export default function PantryPage() {
     toast.success("Item added to pantry!");
   };
 
-  const recentOrder = orders.find((o) => o.status === "placed" || o.status === "on_the_way");
-
   return (
     <AppShell>
       {/* Header */}
@@ -70,25 +68,6 @@ export default function PantryPage() {
       </div>
 
       <div className="flex-1 overflow-auto p-4 lg:px-8 space-y-4">
-        {/* Active order banner */}
-        {recentOrder && (
-          <div className="bg-blue-50 border border-blue-200 rounded-2xl p-4 flex items-center gap-3">
-            <div className="w-8 h-8 bg-blue-100 rounded-xl flex items-center justify-center">
-              🛵
-            </div>
-            <div className="flex-1">
-              <p className="text-sm font-semibold text-blue-800">Order on the way</p>
-              <p className="text-xs text-blue-600">
-                {recentOrder.items.length} items from {recentOrder.platform === "instamart" ? "Swiggy Instamart" : "Zepto"} ·
-                Placed {format(new Date(recentOrder.placedAt), "h:mm a")}
-              </p>
-            </div>
-            <div className="text-sm font-bold text-blue-800">
-              ₹{recentOrder.totalAmount}
-            </div>
-          </div>
-        )}
-
         {/* Near expiry alert */}
         {nearExpiry.length > 0 && (
           <div className="bg-amber-50 border border-amber-200 rounded-2xl p-4">

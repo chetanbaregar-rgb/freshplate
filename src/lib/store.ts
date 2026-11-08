@@ -2,7 +2,7 @@
 import { create } from "zustand";
 import { persist } from "zustand/middleware";
 import type {
-  Household, Member, WeeklyPlan, PlanMeal, PantryItem, Order, ShoppingItem,
+  Household, Member, WeeklyPlan, PlanMeal, PantryItem, ShoppingItem,
 } from "./types";
 import { filterRecipes, getRecipeById } from "./recipes";
 import { avoidLabel, avoidListFor, findConflicts } from "./allergens";
@@ -13,7 +13,6 @@ interface AppState {
   household: Household | null;
   weeklyPlan: WeeklyPlan | null;
   pantry: PantryItem[];
-  orders: Order[];
   shoppingList: ShoppingItem[];
   onboardingStep: number;
   usedRecipeHistory: string[];
@@ -39,7 +38,6 @@ interface AppState {
   // Shopping actions
   buildShoppingList: () => void;
   toggleShoppingItem: (ingredientId: string) => void;
-  placeOrder: (platform: "zepto" | "instamart") => void;
 
   // Pantry actions
   addPantryItem: (item: Omit<PantryItem, "id" | "updatedAt">) => void;
@@ -128,13 +126,18 @@ function afterHouseholdChange(s: AppState, household: Household | null): Partial
   };
 }
 
+/** Removes the "orders" saved by the old demo "Order Now", which never reached a store. */
+export function dropFakeOrders(persisted: Record<string, unknown>): Record<string, unknown> {
+  const { orders: _orders, ...rest } = persisted ?? {};
+  return rest;
+}
+
 export const useAppStore = create<AppState>()(
   persist(
     (set, get) => ({
       household: null,
       weeklyPlan: null,
       pantry: [],
-      orders: [],
       shoppingList: [],
       onboardingStep: 0,
       usedRecipeHistory: [],
@@ -259,24 +262,6 @@ export const useAppStore = create<AppState>()(
           ),
         })),
 
-      placeOrder: (platform) => {
-        const { shoppingList } = get();
-        const items = shoppingList
-          .filter((i) => !i.checked)
-          .map((i) => ({ name: i.name, quantity: i.qtyToBuy, unit: i.unit, price: i.price ?? 50 }));
-
-        const order: Order = {
-          id: `ORD-${Date.now()}`,
-          platform,
-          planId: get().weeklyPlan?.id ?? "",
-          items,
-          status: "placed",
-          placedAt: new Date().toISOString(),
-          totalAmount: items.reduce((s, i) => s + i.price * i.quantity, 0),
-        };
-        set((s) => ({ orders: [order, ...s.orders] }));
-      },
-
       addPantryItem: (item) =>
         set((s) => ({
           pantry: [
@@ -316,11 +301,13 @@ export const useAppStore = create<AppState>()(
     }),
     {
       name: "freshplate-store",
+      version: 1,
+      // v0 saved "orders" that were never sent to any store; drop them.
+      migrate: (persisted) => dropFakeOrders(persisted as Record<string, unknown>),
       partialize: (s) => ({
         household: s.household,
         weeklyPlan: s.weeklyPlan,
         pantry: s.pantry,
-        orders: s.orders,
         usedRecipeHistory: s.usedRecipeHistory,
       }),
     }

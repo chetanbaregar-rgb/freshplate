@@ -185,7 +185,7 @@ export default function ProfilePage() {
             />
           </div>
           <p className="text-xs text-muted-foreground mt-3">
-            Connect accounts for live pricing, availability, and 1-tap ordering. Currently running on demo data.
+            Live pricing, availability and ordering aren&apos;t available yet. FreshPlate builds your shopping list but can&apos;t place orders.
           </p>
         </Section>
 

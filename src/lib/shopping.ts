@@ -1,3 +1,4 @@
+import { format, parseISO } from "date-fns";
 import type { Ingredient, PantryItem, Recipe, ShoppingItem, WeeklyPlan } from "./types";
 
 /** Lower-case, trimmed, single-spaced. Used so "Onion " and "onion" are the same item. */
@@ -116,4 +117,42 @@ export function deductFromPantry(
   }
 
   return next;
+}
+
+const CATEGORY_ORDER: Ingredient["category"][] = [
+  "vegetable", "fruit", "dairy", "grain", "protein", "spice", "oil", "other",
+];
+
+const CATEGORY_NAMES: Record<Ingredient["category"], string> = {
+  vegetable: "Vegetables",
+  fruit: "Fruits",
+  dairy: "Dairy",
+  grain: "Grains & staples",
+  protein: "Protein",
+  spice: "Spices & herbs",
+  oil: "Oils & ghee",
+  other: "Other",
+};
+
+/** Whole units to buy: a recipe needing 2.3 onions means 3. */
+export function quantityToBuy(item: Pick<ShoppingItem, "qtyToBuy" | "unit">): string {
+  return `${Math.ceil(item.qtyToBuy)} ${item.unit}`;
+}
+
+/**
+ * Plain-text list to paste into a notes app, a message, or a store's search. Skips items the
+ * user ticked as already having. Returns "" when there is nothing to buy.
+ */
+export function formatShoppingList(items: ShoppingItem[], weekStart: string): string {
+  const toBuy = items.filter((i) => !i.checked && i.qtyToBuy > 0);
+  if (toBuy.length === 0) return "";
+
+  const lines = [`FreshPlate shopping list - week of ${format(parseISO(weekStart), "d MMM yyyy")}`];
+  for (const category of CATEGORY_ORDER) {
+    const group = toBuy.filter((i) => i.category === category);
+    if (group.length === 0) continue;
+    lines.push("", CATEGORY_NAMES[category]);
+    for (const item of group) lines.push(`- ${item.name}: ${quantityToBuy(item)}`);
+  }
+  return lines.join("\n");
 }

@@ -1,8 +1,8 @@
 import { describe, expect, it } from "vitest";
-import { computeShoppingList, deductFromPantry, toBaseUnit } from "./shopping";
+import { computeShoppingList, deductFromPantry, formatShoppingList, toBaseUnit } from "./shopping";
 import { RECIPES } from "./recipes";
 import { ing, meal, pantryItem, plan, recipe } from "@/test/fixtures";
-import type { Recipe } from "./types";
+import type { Recipe, ShoppingItem } from "./types";
 
 const lookup = (recipes: Recipe[]) => (id: string) => recipes.find((r) => r.id === id);
 
@@ -130,5 +130,46 @@ describe("real recipe data", () => {
     const keys = list.map((i) => `${i.name.toLowerCase()}|${i.unit}`);
     expect(new Set(keys).size).toBe(keys.length);
     expect(new Set(list.map((i) => i.ingredientId)).size).toBe(list.length);
+  });
+});
+
+describe("formatShoppingList", () => {
+  const item = (name: string, category: ShoppingItem["category"], qtyToBuy: number, unit: string, extra: Partial<ShoppingItem> = {}): ShoppingItem => ({
+    ingredientId: name, name, category, qtyNeeded: qtyToBuy, qtyInStock: 0, qtyToBuy, unit, checked: false, ...extra,
+  });
+
+  it("groups by category in a fixed order and rounds quantities up to whole units", () => {
+    const text = formatShoppingList(
+      [item("Rice", "grain", 450, "g"), item("Onion", "vegetable", 2.3, "medium"), item("Tomato", "vegetable", 14, "medium")],
+      "2026-11-02",
+    );
+    expect(text).toBe(
+      [
+        "FreshPlate shopping list - week of 2 Nov 2026",
+        "",
+        "Vegetables",
+        "- Onion: 3 medium",
+        "- Tomato: 14 medium",
+        "",
+        "Grains & staples",
+        "- Rice: 450 g",
+      ].join("\n"),
+    );
+  });
+
+  it("leaves out items the user ticked as already having", () => {
+    const text = formatShoppingList([item("Rice", "grain", 450, "g", { checked: true }), item("Oil", "oil", 20, "ml")], "2026-11-02");
+    expect(text).toContain("Oil");
+    expect(text).not.toContain("Rice");
+  });
+
+  it("returns an empty string when there is nothing to buy", () => {
+    expect(formatShoppingList([], "2026-11-02")).toBe("");
+    expect(formatShoppingList([item("Rice", "grain", 450, "g", { checked: true })], "2026-11-02")).toBe("");
+  });
+
+  it("never mentions prices, stores or delivery", () => {
+    const text = formatShoppingList([item("Rice", "grain", 450, "g", { price: 120, platform: "zepto" })], "2026-11-02");
+    expect(text).not.toMatch(/₹|zepto|instamart|deliver/i);
   });
 });
