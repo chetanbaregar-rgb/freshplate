@@ -1,7 +1,7 @@
 "use client";
 import { useEffect, useMemo, useState } from "react";
-import { useRouter } from "next/navigation";
 import { useAppStore } from "@/lib/store";
+import { useRequireOnboarding } from "@/lib/useRequireOnboarding";
 import AppShell from "@/components/layout/AppShell";
 import { Package, Plus, Trash2, AlertTriangle, X, ChefHat } from "lucide-react";
 import { cn } from "@/lib/utils";
@@ -52,7 +52,6 @@ const CATEGORY_LABELS: Record<string, string> = {
 const CATEGORIES = Object.keys(CATEGORY_LABELS) as PantryItem["category"][];
 
 export default function PantryPage() {
-  const router = useRouter();
   const { household, pantry, addPantryItem, updatePantryItem, removePantryItem, orders } = useAppStore();
   const [showAdd, setShowAdd] = useState(false);
   const [newItem, setNewItem] = useState({
@@ -137,11 +136,7 @@ export default function PantryPage() {
 
   // Deep-linking here without completing onboarding leaves household null
   // (or incomplete) — bounce to onboarding instead of rendering an empty pantry.
-  useEffect(() => {
-    if (!household?.onboardingComplete) {
-      router.replace("/onboarding");
-    }
-  }, [household, router]);
+  useRequireOnboarding();
 
   if (!household?.onboardingComplete) {
     return (

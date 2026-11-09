@@ -2,6 +2,7 @@
 import { useEffect, useState } from "react";
 import { useRouter } from "next/navigation";
 import { useAppStore } from "@/lib/store";
+import { useRequireOnboarding } from "@/lib/useRequireOnboarding";
 import AppShell from "@/components/layout/AppShell";
 import AllergyPicker from "@/components/AllergyPicker";
 import { avoidLabel } from "@/lib/allergens";
@@ -46,11 +47,7 @@ export default function ProfilePage() {
 
   // Deep-linking here without completing onboarding leaves household null
   // (or incomplete) — bounce to onboarding instead of rendering a blank page.
-  useEffect(() => {
-    if (!household?.onboardingComplete) {
-      router.replace("/onboarding");
-    }
-  }, [household, router]);
+  useRequireOnboarding();
 
   if (!household?.onboardingComplete) {
     return (

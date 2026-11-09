@@ -79,12 +79,12 @@ export default function OnboardingPage() {
   // what actually survives a refresh mid-flow (e.g. after adding 2 of 3
   // members, before ever clicking Continue). `household` is already in the
   // store's persist() allowlist, unlike this page's own local state.
-  // `onboardingComplete` stays false here so a resumed-but-unfinished
-  // household is never mistaken for a finished one by other pages (see
-  // src/app/page.tsx's redirect, which sends anything with
-  // onboardingComplete !== true back to /onboarding — exactly where we are).
+  // A draft that was never finished stays `onboardingComplete: false`, so
+  // other pages send it back here. A household that was already finished keeps
+  // its flag: just opening this page must not log the user out of their plan.
   useEffect(() => {
     if (!state && !stateOfOrigin && members.length === 0 && !address) return;
+    const saved = useAppStore.getState().household;
     setHousehold({
       id: householdIdRef.current,
       name: `${members[0]?.name ?? "My"}'s Family`,
@@ -93,8 +93,8 @@ export default function OnboardingPage() {
       dietType,
       members,
       deliveryAddress: address,
-      connectedPlatforms: [],
-      onboardingComplete: false,
+      connectedPlatforms: saved?.connectedPlatforms ?? [],
+      onboardingComplete: saved?.onboardingComplete ?? false,
     });
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [state, stateOfOrigin, dietType, members, address]);

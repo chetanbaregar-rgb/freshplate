@@ -1,7 +1,7 @@
 "use client";
-import { useEffect, useState } from "react";
-import { useRouter } from "next/navigation";
+import { useState } from "react";
 import { useAppStore } from "@/lib/store";
+import { useRequireOnboarding } from "@/lib/useRequireOnboarding";
 import { getRecipeById, filterRecipes, effectiveDietType, excludedIngredientTerms, householdGoals } from "@/lib/recipes";
 import { DAYS, DAYS_FULL, MEAL_LABELS } from "@/lib/utils";
 import { cn } from "@/lib/utils";
@@ -15,7 +15,6 @@ import { useCommerceStatus } from "@/lib/mcp/useCommerceStatus";
 const MEAL_TYPES = ["breakfast", "lunch", "snack", "dinner"] as const;
 
 export default function CalendarPage() {
-  const router = useRouter();
   const { weeklyPlan, household, generateWeeklyPlan, swapMeal, lockMeal, toggleOrderIn, buildShoppingList, markMealCooked, planNotice, dismissPlanNotice } = useAppStore();
   const [selectedDay, setSelectedDay] = useState(0);
   const [swapTarget, setSwapTarget] = useState<{ day: number; mealType: string } | null>(null);
@@ -28,11 +27,7 @@ export default function CalendarPage() {
 
   // Deep-linking here without completing onboarding leaves household null
   // (or incomplete) — bounce to onboarding instead of showing an indefinite loader.
-  useEffect(() => {
-    if (!household?.onboardingComplete) {
-      router.replace("/onboarding");
-    }
-  }, [household, router]);
+  useRequireOnboarding();
 
   if (!household?.onboardingComplete) {
     return (

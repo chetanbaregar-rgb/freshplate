@@ -2,18 +2,21 @@
 import { useEffect } from "react";
 import { useRouter } from "next/navigation";
 import { useAppStore } from "@/lib/store";
+import { useStoreReady } from "@/lib/useRequireOnboarding";
 
 export default function Root() {
   const router = useRouter();
   const household = useAppStore((s) => s.household);
+  const ready = useStoreReady();
 
   useEffect(() => {
+    if (!ready) return; // the first render still shows the empty server state
     if (household?.onboardingComplete) {
       router.replace("/calendar");
     } else {
       router.replace("/onboarding");
     }
-  }, [household, router]);
+  }, [ready, household, router]);
 
   return (
     <div className="flex items-center justify-center min-h-screen bg-brand-50">
