@@ -6,6 +6,7 @@ import { useRequireOnboarding } from "@/lib/useRequireOnboarding";
 import AppShell from "@/components/layout/AppShell";
 import AllergyPicker from "@/components/AllergyPicker";
 import { avoidLabel } from "@/lib/allergens";
+import { SHOPS_AT_OPTIONS, shopsAt, usesDeliveryApps } from "@/lib/localShopping";
 import { GOAL_LABELS, DIET_LABELS } from "@/lib/utils";
 import { goalColor, computeTarget } from "@/lib/nutrition";
 import { User, Plus, Trash2, ChevronRight, Zap, Package, RotateCcw, X, ChefHat } from "lucide-react";
@@ -17,7 +18,7 @@ import type { Member, DietType, HealthGoal, Gender, ActivityLevel, Platform } fr
 
 export default function ProfilePage() {
   const router = useRouter();
-  const { household, addMember, updateMember, removeMember, updateHousehold, generateWeeklyPlan } = useAppStore();
+  const { household, addMember, updateMember, removeMember, updateHousehold, generateWeeklyPlan, unavailable, markAvailable } = useAppStore();
   const [showAddMember, setShowAddMember] = useState(false);
   const { status, loading: statusLoading, disconnect, refresh: refreshStatus } = useCommerceStatus();
   const [disconnecting, setDisconnecting] = useState<Platform | null>(null);
@@ -107,7 +108,7 @@ export default function ProfilePage() {
           <Row label="Lives in" value={household.state} />
           {household.stateOfOrigin && <Row label="Origin" value={household.stateOfOrigin} />}
           <Row label="Diet preference" value={DIET_LABELS[household.dietType]} />
-          <Row label="Delivery address" value={household.deliveryAddress || "Not set"} />
+          <Row label={usesDeliveryApps(household) ? "Delivery address" : "Area"} value={household.deliveryAddress || "Not set"} />
           <div className="pt-2 border-t border-gray-50">
             <label className="text-xs text-muted-foreground block mb-1.5">Change diet</label>
             <div className="flex gap-2">
@@ -127,6 +128,57 @@ export default function ProfilePage() {
               ))}
             </div>
           </div>
+          <div className="pt-2 border-t border-gray-50">
+            <label className="text-xs text-muted-foreground block mb-1.5">Where you shop</label>
+            <div role="radiogroup" aria-label="Where you shop" className="flex gap-2">
+              {SHOPS_AT_OPTIONS.map((o) => (
+                <button
+                  key={o.value}
+                  role="radio"
+                  aria-checked={shopsAt(household) === o.value}
+                  onClick={() => updateHousehold({ shopsAt: o.value })}
+                  className={cn(
+                    "flex-1 py-2 rounded-xl border text-xs font-medium transition-all",
+                    shopsAt(household) === o.value
+                      ? "border-brand-500 bg-brand-50 text-brand-700"
+                      : "border-gray-200 text-gray-500 hover:border-gray-300"
+                  )}
+                >
+                  {o.title}
+                </button>
+              ))}
+            </div>
+          </div>
+        </Section>
+
+        {/* Ingredients the household can't get */}
+        <Section title="Ingredients you can't get">
+          {unavailable.length === 0 ? (
+            <p className="text-xs text-muted-foreground">
+              None. When you can&apos;t find something on your shopping list, tap Can&apos;t find. New plans will avoid
+              meals that need it.
+            </p>
+          ) : (
+            <>
+              <div className="flex flex-wrap gap-2">
+                {unavailable.map((name) => (
+                  <span key={name} className="inline-flex items-center gap-1 bg-gray-100 text-gray-700 text-xs rounded-full pl-3 pr-1.5 py-1">
+                    <span className="capitalize">{name}</span>
+                    <button
+                      onClick={() => markAvailable(name)}
+                      aria-label={`Remove ${name} from the list`}
+                      className="text-gray-400 hover:text-red-500 p-0.5"
+                    >
+                      <X className="w-3 h-3" />
+                    </button>
+                  </span>
+                ))}
+              </div>
+              <p className="text-xs text-muted-foreground mt-3">
+                New plans avoid meals that need these. Remove one when you can get it again.
+              </p>
+            </>
+          )}
         </Section>
 
         {/* Members */}
@@ -217,7 +269,8 @@ export default function ProfilePage() {
           </div>
         </div>
 
-        {/* Platform connections */}
+        {/* Platform connections: only for households that shop through delivery apps */}
+        {usesDeliveryApps(household) && (
         <Section title="Quick-Commerce">
           <div className="space-y-3">
             <PlatformRow
@@ -250,6 +303,7 @@ export default function ProfilePage() {
             connected are real and binding — not a demo.
           </p>
         </Section>
+        )}
 
         {/* Actions */}
         <Section title="Plan">

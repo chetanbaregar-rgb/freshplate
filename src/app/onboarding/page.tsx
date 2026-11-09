@@ -8,7 +8,8 @@ import { useAppStore } from "@/lib/store";
 import AllergyPicker from "@/components/AllergyPicker";
 import { avoidLabel } from "@/lib/allergens";
 import { INDIAN_STATES, GOAL_LABELS, DIET_LABELS } from "@/lib/utils";
-import type { Member, DietType, HealthGoal, Gender, ActivityLevel } from "@/lib/types";
+import { SHOPS_AT_OPTIONS } from "@/lib/localShopping";
+import type { Member, DietType, HealthGoal, Gender, ActivityLevel, ShopsAt } from "@/lib/types";
 
 const TOTAL_STEPS = 5;
 
@@ -40,7 +41,9 @@ export default function OnboardingPage() {
   // Bumped after each member is added so the allergy boxes start empty again.
   const [memberFormKey, setMemberFormKey] = useState(0);
 
-  // Step 5: location
+  // Step 5: how they shop, and where
+  // New households start on "local": the plan then needs nothing from a delivery app.
+  const [shopsAt, setShopsAt] = useState<ShopsAt>("local");
   const [address, setAddress] = useState("");
   const [generating, setGenerating] = useState(false);
 
@@ -63,6 +66,7 @@ export default function OnboardingPage() {
       setDietType(existing.dietType);
       setMembers(existing.members);
       setAddress(existing.deliveryAddress ?? "");
+      setShopsAt(existing.shopsAt ?? "both");
     }
     if (typeof existingStep === "number") setStep(existingStep);
     // Intentionally run only once, on mount, to resume from whatever was
@@ -93,11 +97,12 @@ export default function OnboardingPage() {
       dietType,
       members,
       deliveryAddress: address,
+      shopsAt,
       connectedPlatforms: saved?.connectedPlatforms ?? [],
       onboardingComplete: saved?.onboardingComplete ?? false,
     });
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [state, stateOfOrigin, dietType, members, address]);
+  }, [state, stateOfOrigin, dietType, members, address, shopsAt]);
 
   const go = (delta: number) => {
     setDir(delta);
@@ -141,6 +146,7 @@ export default function OnboardingPage() {
         dislikes: [],
       }],
       deliveryAddress: address || "Mumbai, Maharashtra",
+      shopsAt,
       connectedPlatforms: [] as ("zepto" | "instamart")[],
       onboardingComplete: false,
     };
@@ -360,10 +366,27 @@ export default function OnboardingPage() {
 
           {step === 3 && (
             <StepWrapper key="s3" dir={dir}>
-              <StepTitle title="Delivery address" subtitle="Once you connect Zepto or Swiggy Instamart in the app, FreshPlate checks live ingredient availability at your location before building each week's plan." />
+              <StepTitle title="How do you shop for groceries?" subtitle="This shapes your shopping list. Either way, the plan works from your region, goals and pantry, and you can tell us which ingredients you can't get." />
               <div className="space-y-4">
+                <div role="radiogroup" aria-label="How you shop" className="space-y-2">
+                  {SHOPS_AT_OPTIONS.map((o) => (
+                    <button
+                      key={o.value}
+                      type="button"
+                      role="radio"
+                      aria-checked={shopsAt === o.value}
+                      onClick={() => setShopsAt(o.value)}
+                      className={`w-full text-left rounded-xl border p-3.5 transition-all ${
+                        shopsAt === o.value ? "border-brand-500 bg-brand-50" : "border-gray-200 hover:border-gray-300"
+                      }`}
+                    >
+                      <p className={`text-sm font-medium ${shopsAt === o.value ? "text-brand-700" : ""}`}>{o.title}</p>
+                      <p className="text-xs text-muted-foreground mt-0.5">{o.hint}</p>
+                    </button>
+                  ))}
+                </div>
                 <div>
-                  <label className="block text-sm font-medium mb-2">Address / Area</label>
+                  <label className="block text-sm font-medium mb-2">Area <span className="text-muted-foreground font-normal">(optional)</span></label>
                   <input
                     placeholder="e.g. Koramangala, Bengaluru"
                     value={address}
@@ -371,10 +394,12 @@ export default function OnboardingPage() {
                     className="w-full border border-gray-200 rounded-xl p-3.5 text-sm focus:outline-none focus:ring-2 focus:ring-brand-400"
                   />
                 </div>
-                <div className="bg-amber-50 border border-amber-200 rounded-xl p-4 text-sm text-amber-800">
-                  <p className="font-medium mb-1">Connect your accounts</p>
-                  <p className="text-xs">You&apos;ll link Zepto and Swiggy accounts in the app to enable live availability and 1-tap ordering. For now we&apos;ll use demo data.</p>
-                </div>
+                {shopsAt !== "local" && (
+                  <div className="bg-amber-50 border border-amber-200 rounded-xl p-4 text-sm text-amber-800">
+                    <p className="font-medium mb-1">Delivery apps</p>
+                    <p className="text-xs">Linking Zepto or Swiggy accounts isn&apos;t available yet. Until it is, prices and availability are sample data.</p>
+                  </div>
+                )}
               </div>
             </StepWrapper>
           )}
@@ -388,7 +413,8 @@ export default function OnboardingPage() {
                   <Row label="Origin" value={stateOfOrigin || state || "Not set"} />
                   <Row label="Diet" value={DIET_LABELS[dietType]} />
                   <Row label="Members" value={`${members.length} person${members.length !== 1 ? "s" : ""}`} />
-                  <Row label="Delivery" value={address || "Demo mode"} />
+                  <Row label="Shops at" value={SHOPS_AT_OPTIONS.find((o) => o.value === shopsAt)?.title ?? "Not set"} />
+                  {address && <Row label="Area" value={address} />}
                 </div>
                 {members.length > 0 && (
                   <div className="bg-sage-50 border border-sage-200 rounded-2xl p-4">

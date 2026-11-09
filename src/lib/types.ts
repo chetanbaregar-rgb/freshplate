@@ -3,6 +3,8 @@ export type Gender = "male" | "female" | "other";
 export type ActivityLevel = "sedentary" | "moderate" | "active";
 export type MealType = "breakfast" | "lunch" | "dinner" | "snack";
 export type Platform = "zepto" | "instamart";
+/** Where the household buys groceries: a local shop or market, delivery apps, or both. */
+export type ShopsAt = "local" | "delivery" | "both";
 export type OrderStatus = "placed" | "on_the_way" | "delivered" | "cancelled";
 
 export type HealthGoal =
@@ -39,6 +41,8 @@ export interface Household {
   members: Member[];
   deliveryAddress: string;
   connectedPlatforms: Platform[];
+  /** Missing on households created before this was asked; treated as "both". */
+  shopsAt?: ShopsAt;
   onboardingComplete: boolean;
 }
 

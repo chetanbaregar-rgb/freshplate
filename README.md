@@ -10,6 +10,9 @@ A weekly meal planner for Indian households. It builds a seven-day plan around e
 - **Weekly plan:** breakfast, lunch, dinner and snack for each day, drawn from a regional Indian recipe library (north, south, east, west, central, north-east). Meals can be locked, swapped, or marked as order-in.
 - **Allergies are enforced.** Common allergens can be picked as chips, and anything else can be typed in. Recipes are matched by whole word against their name, description, ingredients and steps, so "egg" does not drop eggplant dishes. The planner, the swap list and plans that already exist all respect the list. Matching reads recipe text rather than structured allergen data and errs towards excluding, so treat it as a convenience and not as medical advice.
 - **Shopping list:** adds up the same ingredient across meals (converting between g/kg and ml/l), subtracts pantry stock once, and keeps incomparable units as separate lines.
+- **Works without delivery apps.** You say whether you shop at a local shop or market, with a delivery app, or both. Local shoppers get a list ordered by how fast things spoil, a Copy list button and a WhatsApp share link, and the plan never asks a platform anything.
+- **Ingredients you can't get.** Tap "Can't find" on any shopping-list item and new plans, and the swap list, avoid meals that need it. Manage the list in Profile.
+- **Fewer different ingredients.** The planner favours meals that reuse the fresh ingredients already on the week's list, which cuts the distinct vegetables, fruit, dairy and protein to buy by about 7% on average.
 - **Pantry:** marking a meal cooked reduces stock once. Delivered orders add stock back.
 - **Recipes:** browse and filter the whole library.
 - **Zepto and Instamart:** when an account is connected, the app can search live products and place orders through each platform's MCP server. Without a connection it runs in a clearly labelled demo mode with sample prices.

@@ -2,8 +2,10 @@
 import { useEffect, useState } from "react";
 import { useAppStore } from "@/lib/store";
 import { useRequireOnboarding } from "@/lib/useRequireOnboarding";
+import { getRecipeById } from "@/lib/recipes";
+import { categoryRank, formatShoppingList, ingredientKey, mealsUsingIngredient, usesDeliveryApps } from "@/lib/localShopping";
 import AppShell from "@/components/layout/AppShell";
-import { ShoppingCart, Package, Check, Zap, RefreshCw, ChevronDown, ChevronUp, AlertTriangle, ChefHat } from "lucide-react";
+import { ShoppingCart, Package, Check, Zap, RefreshCw, ChevronDown, ChevronUp, AlertTriangle, ChefHat, Copy, Share2 } from "lucide-react";
 import { cn, formatCurrency } from "@/lib/utils";
 import { toast } from "sonner";
 import { useCommerceStatus } from "@/lib/mcp/useCommerceStatus";
@@ -21,8 +23,12 @@ const CATEGORY_LABELS: Record<string, string> = {
 };
 
 export default function ShoppingPage() {
-  const { household, shoppingList, buildShoppingList, toggleShoppingItem, refreshAvailability, placeOrder, weeklyPlan } =
-    useAppStore();
+  const {
+    household, shoppingList, buildShoppingList, toggleShoppingItem, refreshAvailability, placeOrder, weeklyPlan,
+    unavailable, markUnavailable, markAvailable,
+  } = useAppStore();
+  // Households that shop locally get no platform picker, prices or order button: none of it applies to them.
+  const localOnly = !usesDeliveryApps(household);
   const [platform, setPlatform] = useState<"zepto" | "instamart">("instamart");
   const [collapsedCategories, setCollapsedCategories] = useState<Set<string>>(new Set());
   const [ordering, setOrdering] = useState(false);
@@ -42,9 +48,9 @@ export default function ShoppingPage() {
   }, [weeklyPlan?.id]);
 
   useEffect(() => {
-    if (weeklyPlan) refreshAvailability(platform);
+    if (weeklyPlan && !localOnly) refreshAvailability(platform);
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [platform, weeklyPlan?.id]);
+  }, [platform, weeklyPlan?.id, localOnly]);
 
   const grouped = shoppingList.reduce<Record<string, ShoppingItem[]>>((acc, item) => {
     const cat = item.category;
@@ -77,6 +83,27 @@ export default function ShoppingPage() {
     } else {
       void confirmOrder();
     }
+  };
+
+  const listText = () => formatShoppingList(shoppingList);
+
+  const copyList = async () => {
+    try {
+      await navigator.clipboard.writeText(listText());
+      toast.success("List copied. Paste it into WhatsApp or a note.");
+    } catch {
+      toast.error("Couldn't copy. Select the list and copy it by hand.");
+    }
+  };
+
+  const cantFind = (item: ShoppingItem) => {
+    markUnavailable(item.name);
+    const meals = mealsUsingIngredient(weeklyPlan, item.name, getRecipeById);
+    toast.success(
+      meals > 0
+        ? `Noted. ${meals} meal${meals === 1 ? "" : "s"} this week use${meals === 1 ? "s" : ""} ${item.name}. Swap ${meals === 1 ? "it" : "them"} in Calendar, or regenerate the plan to avoid it.`
+        : `Noted. New plans will avoid ${item.name}.`
+    );
   };
 
   const confirmOrder = async () => {
@@ -135,10 +162,18 @@ export default function ShoppingPage() {
               {shoppingList.length} items · {checkedCount} already have
             </p>
           </div>
+          <div className="flex gap-2">
+          <button
+            onClick={copyList}
+            disabled={shoppingList.every((i) => i.checked)}
+            className="flex items-center gap-1.5 text-xs border border-gray-200 rounded-xl px-3 py-2 text-gray-500 hover:text-brand-600 disabled:opacity-40"
+          >
+            <Copy className="w-3.5 h-3.5" /> Copy list
+          </button>
           <button
             onClick={() => {
               buildShoppingList();
-              refreshAvailability(platform);
+              if (!localOnly) refreshAvailability(platform);
               setOrdered(false);
               toast.success("List refreshed!");
             }}
@@ -146,8 +181,10 @@ export default function ShoppingPage() {
           >
             <RefreshCw className="w-3.5 h-3.5" /> Refresh
           </button>
+          </div>
         </div>
 
+        {!localOnly && (<>
         {/* Platform picker */}
         <div className="flex gap-2">
           {(["instamart", "zepto"] as const).map((p) => (
@@ -176,10 +213,11 @@ export default function ShoppingPage() {
             <span className="text-gray-400">● Demo pricing — connect {platformName} in Profile for live data</span>
           )}
         </p>
+        </>)}
       </div>
 
       <div className="flex-1 overflow-auto p-4 lg:px-8 space-y-3 pb-32">
-        {Object.entries(grouped).map(([cat, items]) => {
+        {Object.entries(grouped).sort(([a], [b]) => categoryRank(a) - categoryRank(b)).map(([cat, items]) => {
           const collapsed = collapsedCategories.has(cat);
           const allChecked = items.every((i) => i.checked);
           return (
@@ -227,7 +265,20 @@ export default function ShoppingPage() {
                           Need {Math.ceil(item.qtyToBuy)} {item.unit}
                           {item.qtyInStock > 0 && ` · ${item.qtyInStock} in stock`}
                         </p>
+                        {unavailable.includes(ingredientKey(item.name)) ? (
+                          <p className="text-xs mt-1 flex items-center gap-2">
+                            <span className="text-amber-700 bg-amber-50 px-2 py-0.5 rounded-full">Hard to find. Plans will avoid it</span>
+                            <button onClick={() => markAvailable(item.name)} className="text-brand-600 font-medium">Undo</button>
+                          </p>
+                        ) : (
+                          !item.checked && (
+                            <button onClick={() => cantFind(item)} className="text-xs text-gray-400 hover:text-brand-600 mt-0.5 underline underline-offset-2">
+                              Can&apos;t find
+                            </button>
+                          )
+                        )}
                       </div>
+                      {!localOnly && (
                       <div className="text-right flex-shrink-0">
                         {item.price ? (
                           <p className="text-sm font-semibold text-brand-600 flex items-center justify-end gap-1.5">
@@ -243,6 +294,7 @@ export default function ShoppingPage() {
                         )}
                         {item.packSize && <p className="text-[10px] text-muted-foreground">{item.packSize}</p>}
                       </div>
+                      )}
                     </div>
                   ))}
                 </div>
@@ -259,8 +311,28 @@ export default function ShoppingPage() {
         )}
       </div>
 
+      {/* Local shoppers get a list to take to the shop; there is nothing to order. */}
+      {localOnly && unchecked.length > 0 && (
+        <div className="fixed bottom-16 lg:bottom-0 left-0 lg:left-64 right-0 bg-white border-t border-[rgb(235,227,215)] p-4 safe-bottom">
+          <div className="max-w-2xl mx-auto flex items-center gap-3">
+            <div className="flex-1">
+              <p className="text-sm font-semibold">{unchecked.length} items to buy</p>
+              <p className="text-xs text-muted-foreground">Share the list with your shop or take it with you</p>
+            </div>
+            <a
+              href={`https://wa.me/?text=${encodeURIComponent(listText())}`}
+              target="_blank"
+              rel="noopener noreferrer"
+              className="flex items-center gap-2 bg-brand-500 text-white px-5 py-3 rounded-xl text-sm font-semibold hover:bg-brand-600 transition-colors"
+            >
+              <Share2 className="w-4 h-4" /> Send on WhatsApp
+            </a>
+          </div>
+        </div>
+      )}
+
       {/* Sticky order footer */}
-      {unchecked.length > 0 && (
+      {!localOnly && unchecked.length > 0 && (
         <div className="fixed bottom-16 lg:bottom-0 left-0 lg:left-64 right-0 bg-white border-t border-[rgb(235,227,215)] p-4 safe-bottom">
           <div className="max-w-2xl mx-auto flex items-center gap-3">
             <div className="flex-1">
