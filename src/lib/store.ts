@@ -10,6 +10,9 @@ import {
 } from "./recipes";
 import { avoidLabel, avoidListFor, findConflicts } from "./allergens";
 import { computeShoppingList, deductFromPantry } from "./shopping";
+import {
+  blockedIngredients, freshKeys, ingredientKey, reuseScore, usesDeliveryApps,
+} from "./localShopping";
 import { resolveAdapter } from "./mcp/adapter";
 import { convertQuantity } from "./units";
 import { startOfWeek, format } from "date-fns";
@@ -71,8 +74,14 @@ interface AppState {
   shoppingList: ShoppingItem[];
   onboardingStep: number;
   usedRecipeHistory: string[];
+  /** Ingredients the household told us they cannot get (see ingredientKey). Plans avoid them. */
+  unavailable: string[];
   /** One-off message about meals the app removed or could not fill. Not persisted. */
   planNotice: string | null;
+
+  // Ingredients the household cannot get
+  markUnavailable: (name: string) => void;
+  markAvailable: (name: string) => void;
 
   // Household actions
   setHousehold: (h: Household) => void;
@@ -123,13 +132,19 @@ function pantryScore(recipe: Recipe, pantry: PantryItem[]): number {
   return matched / recipe.ingredients.length;
 }
 
+interface PickContext {
+  /** Fresh ingredients already being bought for meals picked so far this week. */
+  boughtFresh: Set<string>;
+}
+
 function weightedPick(
   recipes: Recipe[],
   pantry: PantryItem[],
   platform: Platform | null,
   availabilityCache: Map<string, boolean>,
   regionPreference: string,
-  goals: HealthGoal[]
+  goals: HealthGoal[],
+  ctx: PickContext
 ): Recipe | undefined {
   if (recipes.length === 0) return undefined;
   const weights = recipes.map((r) => {
@@ -146,6 +161,10 @@ function weightedPick(
     return 1
       + pantryScore(r, pantry) * 3
       + availabilityScore(r, platform, availabilityCache) * 2
+      // Fewer different things to find: favour meals that reuse what is already on this week's list.
+      // Weight 8 cuts the distinct fresh ingredients in a week by about 7%; the recipe library, not the
+      // weight, limits how far this can go (20 only reaches about 10%).
+      + reuseScore(r, ctx.boughtFresh) * 8
       + regionScore * 2
       + goalScore * 2;
   });
@@ -158,16 +177,24 @@ function weightedPick(
   return recipes[recipes.length - 1];
 }
 
-async function generatePlan(household: Household, history: string[], pantry: PantryItem[]): Promise<WeeklyPlan> {
+async function generatePlan(
+  household: Household,
+  history: string[],
+  pantry: PantryItem[],
+  unavailable: string[] = [],
+): Promise<WeeklyPlan> {
   const weekStart = format(startOfWeek(new Date(), { weekStartsOn: 1 }), "yyyy-MM-dd");
   const meals: PlanMeal[] = [];
   const usedThisWeek = new Set<string>();
+  const boughtFresh = new Set<string>();
 
   // Prefer state of origin for authentic regional recipes (per onboarding
   // copy: "your origin to suggest authentic regional recipes"), falling back
   // to residence when origin wasn't given.
   const regionPreference = household.stateOfOrigin ?? household.state;
-  const platform = household.connectedPlatforms[0] ?? null;
+  // Delivery apps only matter to households that use them. Everyone else is planned from region,
+  // goals, pantry and what they have told us they cannot get, without asking any platform.
+  const platform = usesDeliveryApps(household) ? household.connectedPlatforms[0] ?? null : null;
 
   // Most-restrictive diet across the household default + any member
   // override, and a hard exclusion list from every member's allergies and
@@ -193,8 +220,17 @@ async function generatePlan(household: Household, history: string[], pantry: Pan
       const newThisWeek = all.filter(r => !usedThisWeek.has(r.id));
       const pool = fresh.length > 0 ? fresh : newThisWeek.length > 0 ? newThisWeek : all;
 
-      const recipe = weightedPick(pool, pantry, platform, availabilityCache, regionPreference, goals);
-      if (recipe) usedThisWeek.add(recipe.id);
+      // Leave out recipes that need something the household cannot get, unless that would leave
+      // nothing: a slot with a hard-to-find ingredient is better than an empty one, and the
+      // notice below says so.
+      const gettable = pool.filter((r) => blockedIngredients(r, unavailable).length === 0);
+      const candidates = gettable.length > 0 ? gettable : pool;
+
+      const recipe = weightedPick(candidates, pantry, platform, availabilityCache, regionPreference, goals, { boughtFresh });
+      if (recipe) {
+        usedThisWeek.add(recipe.id);
+        freshKeys(recipe).forEach((k) => boughtFresh.add(k));
+      }
 
       meals.push({
         day, mealType,
@@ -210,6 +246,27 @@ async function generatePlan(household: Household, history: string[], pantry: Pan
   }
 
   return { id: `plan-${Date.now()}`, weekStart, meals, status: "draft" };
+}
+
+/** Meals that still use an ingredient the household marked as hard to find, because nothing else fit. */
+function unavailableNotice(plan: WeeklyPlan, unavailable: string[]): string | null {
+  if (unavailable.length === 0) return null;
+  const names = new Set<string>();
+  let meals = 0;
+  for (const m of plan.meals) {
+    const recipe = m.recipeId ? getRecipeById(m.recipeId) : undefined;
+    const hits = recipe ? blockedIngredients(recipe, unavailable) : [];
+    if (hits.length === 0) continue;
+    meals++;
+    hits.forEach((h) => names.add(h));
+  }
+  if (meals === 0) return null;
+  return `${meals} meal${meals === 1 ? "" : "s"} still use${meals === 1 ? "s" : ""} ${Array.from(names).join(", ")}, which you marked as hard to find, because nothing else fit. Use Swap to change ${meals === 1 ? "it" : "them"}.`;
+}
+
+function planNoticeFor(plan: WeeklyPlan, unavailable: string[]): string | null {
+  const parts = [unfilledNotice(plan), unavailableNotice(plan, unavailable)].filter((p): p is string => p !== null);
+  return parts.length > 0 ? parts.join(" ") : null;
 }
 
 function unfilledNotice(plan: WeeklyPlan): string | null {
@@ -281,7 +338,18 @@ export const useAppStore = create<AppState>()(
       shoppingList: [],
       onboardingStep: 0,
       usedRecipeHistory: [],
+      unavailable: [],
       planNotice: null,
+
+      markUnavailable: (name) =>
+        set((s) => {
+          const key = ingredientKey(name);
+          return key && !s.unavailable.includes(key) ? { unavailable: [...s.unavailable, key] } : {};
+        }),
+      markAvailable: (name) => {
+        const key = ingredientKey(name);
+        set((s) => ({ unavailable: s.unavailable.filter((k) => k !== key) }));
+      },
 
       setHousehold: (h) => set({ household: h }),
       updateHousehold: (patch) =>
@@ -315,28 +383,28 @@ export const useAppStore = create<AppState>()(
             : null,
         })),
       completeOnboarding: async () => {
-        const { household, usedRecipeHistory, pantry } = get();
+        const { household, usedRecipeHistory, pantry, unavailable } = get();
         if (!household) return;
-        const plan = await generatePlan(household, usedRecipeHistory, pantry);
+        const plan = await generatePlan(household, usedRecipeHistory, pantry, unavailable);
         const newIds = plan.meals.map(m => m.recipeId).filter((id): id is string => id !== null);
         set({
           household: { ...household, onboardingComplete: true },
           weeklyPlan: plan,
           usedRecipeHistory: [...usedRecipeHistory, ...newIds],
-          planNotice: unfilledNotice(plan),
+          planNotice: planNoticeFor(plan, unavailable),
         });
       },
       setOnboardingStep: (step) => set({ onboardingStep: step }),
 
       generateWeeklyPlan: async () => {
-        const { household, usedRecipeHistory, pantry } = get();
+        const { household, usedRecipeHistory, pantry, unavailable } = get();
         if (!household) return;
-        const plan = await generatePlan(household, usedRecipeHistory, pantry);
+        const plan = await generatePlan(household, usedRecipeHistory, pantry, unavailable);
         const newIds = plan.meals.map(m => m.recipeId).filter((id): id is string => id !== null);
         set({
           weeklyPlan: plan,
           usedRecipeHistory: [...usedRecipeHistory, ...newIds],
-          planNotice: unfilledNotice(plan),
+          planNotice: planNoticeFor(plan, unavailable),
         });
       },
       dismissPlanNotice: () => set({ planNotice: null }),
@@ -614,6 +682,7 @@ export const useAppStore = create<AppState>()(
         pantry: s.pantry,
         orders: s.orders,
         usedRecipeHistory: s.usedRecipeHistory,
+        unavailable: s.unavailable,
         onboardingStep: s.onboardingStep,
       }),
     }

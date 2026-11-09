@@ -3,6 +3,7 @@ import { useState } from "react";
 import { useAppStore } from "@/lib/store";
 import { useRequireOnboarding } from "@/lib/useRequireOnboarding";
 import { getRecipeById, filterRecipes, effectiveDietType, excludedIngredientTerms, householdGoals } from "@/lib/recipes";
+import { blockedIngredients } from "@/lib/localShopping";
 import { DAYS, DAYS_FULL, MEAL_LABELS } from "@/lib/utils";
 import { cn } from "@/lib/utils";
 import AppShell from "@/components/layout/AppShell";
@@ -15,7 +16,7 @@ import { useCommerceStatus } from "@/lib/mcp/useCommerceStatus";
 const MEAL_TYPES = ["breakfast", "lunch", "snack", "dinner"] as const;
 
 export default function CalendarPage() {
-  const { weeklyPlan, household, generateWeeklyPlan, swapMeal, lockMeal, toggleOrderIn, buildShoppingList, markMealCooked, planNotice, dismissPlanNotice } = useAppStore();
+  const { weeklyPlan, household, generateWeeklyPlan, swapMeal, lockMeal, toggleOrderIn, buildShoppingList, markMealCooked, planNotice, dismissPlanNotice, unavailable } = useAppStore();
   const [selectedDay, setSelectedDay] = useState(0);
   const [swapTarget, setSwapTarget] = useState<{ day: number; mealType: string } | null>(null);
   const [detailMeal, setDetailMeal] = useState<{ day: number; mealType: string } | null>(null);
@@ -73,7 +74,7 @@ export default function CalendarPage() {
     toast.success("Meal swapped!");
   };
 
-  const swapCandidates = swapTarget
+  const allSwapCandidates = swapTarget
     ? filterRecipes({
         dietType: effectiveDietType(household),
         mealType: swapTarget.mealType,
@@ -86,6 +87,9 @@ export default function CalendarPage() {
         ],
       })
     : [];
+  // Leave out meals that need something the household can't get, unless that would leave nothing to offer.
+  const gettableSwaps = allSwapCandidates.filter((r) => blockedIngredients(r, unavailable).length === 0);
+  const swapCandidates = gettableSwaps.length > 0 ? gettableSwaps : allSwapCandidates;
 
   const detailPlanMeal = detailMeal
     ? weeklyPlan.meals.find((m) => m.day === detailMeal.day && m.mealType === detailMeal.mealType)
