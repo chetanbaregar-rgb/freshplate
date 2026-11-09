@@ -119,6 +119,34 @@ interface AppState {
   checkDeliveries: () => Promise<void>;
 }
 
+/**
+ * How many recently planned recipes count as "already seen" when picking the next plan: about
+ * three weeks' worth. Without a limit, every recipe a household has ever been served is excluded
+ * for good, so a region's few dishes are used up in the first weeks and never come back.
+ */
+const HISTORY_WINDOW = 84;
+/** The household's own regional dishes may come back sooner: about two weeks, not three. */
+const REGIONAL_HISTORY_WINDOW = 28;
+
+/**
+ * About this share of a household's meals should come from its own region, when the library has
+ * enough dishes for it. A fixed boost cannot do this: the same weight gives a very different share
+ * in a library of 160 recipes than in one of 3,600, so the boost is worked out from how many of the
+ * candidates are regional. (A small region can fall short of this, because each dish is used at
+ * most once a week.)
+ */
+const REGIONAL_SHARE_TARGET = 0.35;
+/** Stops a region with a single candidate from drowning out everything else. */
+const MAX_REGIONAL_BOOST = 40;
+
+/** How much to multiply an own-region recipe's weight by so own-region picks come out near the target. */
+function regionalBoost(recipes: Recipe[], regionPreference: string): number {
+  const own = recipes.filter((r) => r.cuisineRegion.includes(regionPreference)).length;
+  if (own === 0 || own === recipes.length) return 1;
+  const needed = (REGIONAL_SHARE_TARGET / (1 - REGIONAL_SHARE_TARGET)) * ((recipes.length - own) / own);
+  return Math.min(MAX_REGIONAL_BOOST, Math.max(1, needed));
+}
+
 const MEAL_TYPES = ["breakfast", "lunch", "snack", "dinner"] as const;
 
 // Fraction of a recipe's ingredients already sitting in the pantry — used to
@@ -147,26 +175,28 @@ function weightedPick(
   ctx: PickContext
 ): Recipe | undefined {
   if (recipes.length === 0) return undefined;
+  const boost = regionalBoost(recipes, regionPreference);
   const weights = recipes.map((r) => {
     // Region is a preference weight, not a hard filter — hard-filtering by
     // state shrinks the pool to ~1 recipe/meal-type for most states, which
     // guarantees the same dish repeats every day of the week. Weighting
     // instead keeps the full diet-appropriate pool in play while still
     // favoring regional dishes when there's a real choice.
-    const regionScore = r.cuisineRegion.includes(regionPreference) ? 1 : r.cuisineRegion.includes("Pan-India") ? 0.5 : 0;
+    const isOwn = r.cuisineRegion.includes(regionPreference);
+    // Dishes from everywhere in India get half the regional boost.
+    const regionBoost = isOwn ? boost : r.cuisineRegion.includes("Pan-India") ? 1 + (boost - 1) * 0.5 : 1;
     // Fraction of the household's distinct goals this recipe serves — so a
     // mixed-goal household (e.g. one member on weight_loss, another on
     // muscle) isn't planned entirely around whoever was added first.
     const goalScore = goals.length > 0 ? goals.filter((g) => r.goalTags.includes(g)).length / goals.length : 0;
-    return 1
+    return regionBoost * (1
       + pantryScore(r, pantry) * 3
       + availabilityScore(r, platform, availabilityCache) * 2
       // Fewer different things to find: favour meals that reuse what is already on this week's list.
       // Weight 8 cuts the distinct fresh ingredients in a week by about 7%; the recipe library, not the
       // weight, limits how far this can go (20 only reaches about 10%).
       + reuseScore(r, ctx.boughtFresh) * 8
-      + regionScore * 2
-      + goalScore * 2;
+      + goalScore * 2);
   });
   const total = weights.reduce((a, b) => a + b, 0);
   let r = Math.random() * total;
@@ -187,6 +217,8 @@ async function generatePlan(
   const meals: PlanMeal[] = [];
   const usedThisWeek = new Set<string>();
   const boughtFresh = new Set<string>();
+  const recentlyUsed = new Set(history.slice(-HISTORY_WINDOW));
+  const recentlyUsedOwn = new Set(history.slice(-REGIONAL_HISTORY_WINDOW));
 
   // Prefer state of origin for authentic regional recipes (per onboarding
   // copy: "your origin to suggest authentic regional recipes"), falling back
@@ -216,7 +248,7 @@ async function generatePlan(
       // Priority 1: not used this week AND not in any prior week
       // Priority 2: not used this week (may be in prior weeks)
       // Fallback: any (all slots for this meal type exhausted)
-      const fresh = all.filter(r => !usedThisWeek.has(r.id) && !history.includes(r.id));
+      const fresh = all.filter(r => !usedThisWeek.has(r.id) && !(r.cuisineRegion.includes(regionPreference) ? recentlyUsedOwn : recentlyUsed).has(r.id));
       const newThisWeek = all.filter(r => !usedThisWeek.has(r.id));
       const pool = fresh.length > 0 ? fresh : newThisWeek.length > 0 ? newThisWeek : all;
 
@@ -390,7 +422,7 @@ export const useAppStore = create<AppState>()(
         set({
           household: { ...household, onboardingComplete: true },
           weeklyPlan: plan,
-          usedRecipeHistory: [...usedRecipeHistory, ...newIds],
+          usedRecipeHistory: [...usedRecipeHistory, ...newIds].slice(-HISTORY_WINDOW),
           planNotice: planNoticeFor(plan, unavailable),
         });
       },
@@ -403,7 +435,7 @@ export const useAppStore = create<AppState>()(
         const newIds = plan.meals.map(m => m.recipeId).filter((id): id is string => id !== null);
         set({
           weeklyPlan: plan,
-          usedRecipeHistory: [...usedRecipeHistory, ...newIds],
+          usedRecipeHistory: [...usedRecipeHistory, ...newIds].slice(-HISTORY_WINDOW),
           planNotice: planNoticeFor(plan, unavailable),
         });
       },
