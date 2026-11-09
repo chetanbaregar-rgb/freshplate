@@ -20,7 +20,9 @@ There is no database. Household, plan, pantry and order data live in your browse
 
 ## Status
 
-The Zepto and Instamart connections are built but not switched on for the live site. Neither platform issues a fixed client ID and secret, which this version of the app expects (see `src/lib/mcp/oauth.ts`), so connecting needs their approval and a change to register clients automatically. Until then the live site runs in demo mode for ordering.
+**Instamart** registers itself with Swiggy automatically (Dynamic Client Registration), so no client ID or secret is needed. Connecting works against `http://localhost` today. For the live site, Swiggy has to approve the HTTPS redirect address first (application and review at https://mcp.swiggy.com/builders/access/), and until then the live site runs ordering in demo mode.
+
+**Zepto** documents no way for a third-party app to get a client ID and secret, and only whitelists a fixed list of redirect addresses, so its connection is built but not switched on. Until that changes, ordering runs in demo mode.
 
 ## Tech
 

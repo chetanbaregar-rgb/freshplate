@@ -14,6 +14,10 @@ export interface PlatformSession {
   accessToken: string;
   refreshToken?: string;
   expiresAt?: number; // epoch ms
+  /** Instamart only — the OAuth client registered for this connection. Kept so the token can
+   *  be refreshed. A client that was never registered here (fixed env client) leaves these unset. */
+  clientId?: string;
+  clientSecret?: string;
   selectedAddressId?: string;
   addressLabel?: string;
   storeId?: string;
@@ -40,6 +44,9 @@ interface PendingOAuthData {
   platform?: Platform;
   state?: string;
   codeVerifier?: string;
+  /** The client registered for this sign-in attempt; the callback must redeem the code with it. */
+  clientId?: string;
+  clientSecret?: string;
 }
 
 // Resolved lazily (not at module load) so `next build`'s static page-data
@@ -99,17 +106,30 @@ export async function clearPlatformSession(platform: Platform): Promise<void> {
   await session.save();
 }
 
-export async function startPendingOAuth(platform: Platform, state: string, codeVerifier: string): Promise<void> {
+export async function startPendingOAuth(
+  platform: Platform,
+  state: string,
+  codeVerifier: string,
+  client?: { clientId: string; clientSecret?: string }
+): Promise<void> {
   const session = await pendingOAuthSession();
   session.platform = platform;
   session.state = state;
   session.codeVerifier = codeVerifier;
+  session.clientId = client?.clientId;
+  session.clientSecret = client?.clientSecret;
   await session.save();
 }
 
 export async function consumePendingOAuth(): Promise<PendingOAuthData> {
   const session = await pendingOAuthSession();
-  const data = { platform: session.platform, state: session.state, codeVerifier: session.codeVerifier };
+  const data = {
+    platform: session.platform,
+    state: session.state,
+    codeVerifier: session.codeVerifier,
+    clientId: session.clientId,
+    clientSecret: session.clientSecret,
+  };
   session.destroy();
   return data;
 }
