@@ -1,7 +1,7 @@
 "use client";
 import { useEffect, useState } from "react";
-import { useRouter } from "next/navigation";
 import { useAppStore } from "@/lib/store";
+import { useRequireOnboarding } from "@/lib/useRequireOnboarding";
 import AppShell from "@/components/layout/AppShell";
 import { ShoppingCart, Package, Check, Zap, RefreshCw, ChevronDown, ChevronUp, AlertTriangle, ChefHat } from "lucide-react";
 import { cn, formatCurrency } from "@/lib/utils";
@@ -21,7 +21,6 @@ const CATEGORY_LABELS: Record<string, string> = {
 };
 
 export default function ShoppingPage() {
-  const router = useRouter();
   const { household, shoppingList, buildShoppingList, toggleShoppingItem, refreshAvailability, placeOrder, weeklyPlan } =
     useAppStore();
   const [platform, setPlatform] = useState<"zepto" | "instamart">("instamart");
@@ -100,11 +99,7 @@ export default function ShoppingPage() {
 
   // Deep-linking here without completing onboarding leaves household null
   // (or incomplete) — bounce to onboarding instead of showing an indefinite loader.
-  useEffect(() => {
-    if (!household?.onboardingComplete) {
-      router.replace("/onboarding");
-    }
-  }, [household, router]);
+  useRequireOnboarding();
 
   if (!household?.onboardingComplete) {
     return (

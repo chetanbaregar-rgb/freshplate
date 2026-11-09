@@ -2,12 +2,14 @@
 import { create } from "zustand";
 import { persist } from "zustand/middleware";
 import type {
-  Household, Member, WeeklyPlan, PlanMeal, PantryItem, Order, OrderStatus, ShoppingItem, Platform, Recipe, HealthGoal, Ingredient,
+  Household, Member, WeeklyPlan, PlanMeal, PantryItem, Order, OrderStatus, ShoppingItem, Platform, Recipe, HealthGoal,
 } from "./types";
 import {
-  RECIPES, filterRecipes, getIngredientById, effectiveDietType, excludedIngredientTerms, householdGoals,
+  filterRecipes, getRecipeById, getIngredientById, effectiveDietType, excludedIngredientTerms, householdGoals,
   getIngredientCategoryByName,
 } from "./recipes";
+import { avoidLabel, avoidListFor, findConflicts } from "./allergens";
+import { computeShoppingList, deductFromPantry } from "./shopping";
 import { resolveAdapter } from "./mcp/adapter";
 import { convertQuantity } from "./units";
 import { startOfWeek, format } from "date-fns";
@@ -69,6 +71,8 @@ interface AppState {
   shoppingList: ShoppingItem[];
   onboardingStep: number;
   usedRecipeHistory: string[];
+  /** One-off message about meals the app removed or could not fill. Not persisted. */
+  planNotice: string | null;
 
   // Household actions
   setHousehold: (h: Household) => void;
@@ -84,6 +88,7 @@ interface AppState {
   swapMeal: (day: number, mealType: string, recipeId: string) => void;
   lockMeal: (day: number, mealType: string) => void;
   toggleOrderIn: (day: number, mealType: string) => void;
+  dismissPlanNotice: () => void;
 
   // Shopping actions
   buildShoppingList: () => void;
@@ -207,30 +212,47 @@ async function generatePlan(household: Household, history: string[], pantry: Pan
   return { id: `plan-${Date.now()}`, weekStart, meals, status: "draft" };
 }
 
-/** Sums quantity across every pantry entry matching `ing`'s name (not just
- *  the first, which previously left duplicate pantry rows invisible to stock
- *  math), converting each into `ing`'s unit. A pantry entry in an
- *  incompatible unit (e.g. logged in "kg" for an ingredient measured in
- *  "medium") is skipped rather than guessed at — better to over-buy than to
- *  silently assume stock that may not cover the need. */
-function stockFor(ing: Ingredient, pantry: PantryItem[]): number {
-  const key = ing.name.trim().toLowerCase();
-  return pantry
-    .filter((p) => p.name.trim().toLowerCase() === key)
-    .reduce((sum, p) => sum + (convertQuantity(p.quantity, p.unit, ing.unit) ?? 0), 0);
+function unfilledNotice(plan: WeeklyPlan): string | null {
+  const empty = plan.meals.filter((m) => !m.recipeId && !m.isOrderIn).length;
+  if (empty === 0) return null;
+  return `${empty} meal${empty === 1 ? "" : "s"} could not be filled: no recipe fits everyone's diet, allergies and dislikes. Check the allergy list in Profile.`;
 }
 
-function newShoppingItem(ing: Ingredient, needed: number, pantry: PantryItem[]): ShoppingItem {
+/**
+ * Clears any planned meal that conflicts with the household's allergies or dislikes, locked
+ * or not. Used whenever the members change, so an allergy added later never leaves an
+ * unsafe meal in the plan.
+ */
+function dropConflictingMeals(
+  plan: WeeklyPlan | null,
+  household: Household | null,
+): { plan: WeeklyPlan | null; removed: number; terms: string[] } {
+  if (!plan || !household) return { plan, removed: 0, terms: [] };
+  const avoid = avoidListFor(household.members);
+  if (avoid.length === 0) return { plan, removed: 0, terms: [] };
+
+  let removed = 0;
+  const terms = new Set<string>();
+  const meals = plan.meals.map((m) => {
+    const recipe = m.recipeId ? getRecipeById(m.recipeId) : undefined;
+    const hits = recipe ? findConflicts(recipe, avoid) : [];
+    if (hits.length === 0) return m;
+    removed++;
+    hits.forEach((h) => terms.add(avoidLabel(h)));
+    return { ...m, recipeId: null, locked: false, cooked: false };
+  });
+  return { plan: removed > 0 ? { ...plan, meals } : plan, removed, terms: Array.from(terms) };
+}
+
+/** State patch after the household changed: drop conflicting meals and say so. */
+function afterHouseholdChange(s: AppState, household: Household | null): Partial<AppState> {
+  const { plan, removed, terms } = dropConflictingMeals(s.weeklyPlan, household);
+  if (removed === 0) return { household };
   return {
-    ingredientId: ing.id,
-    name: ing.name,
-    category: ing.category,
-    qtyNeeded: needed,
-    qtyInStock: stockFor(ing, pantry),
-    qtyToBuy: 0, // recomputed once all recipes for the week have been aggregated
-    unit: ing.unit,
-    available: true,
-    checked: false,
+    household,
+    weeklyPlan: plan,
+    shoppingList: [],
+    planNotice: `${removed} meal${removed === 1 ? "" : "s"} removed from your plan because ${removed === 1 ? "it contains" : "they contain"} ${terms.join(", ")}. Use Swap or Regenerate to fill the gap${removed === 1 ? "" : "s"}.`,
   };
 }
 
@@ -259,27 +281,30 @@ export const useAppStore = create<AppState>()(
       shoppingList: [],
       onboardingStep: 0,
       usedRecipeHistory: [],
+      planNotice: null,
 
       setHousehold: (h) => set({ household: h }),
       updateHousehold: (patch) =>
-        set((s) => ({ household: s.household ? { ...s.household, ...patch } : null })),
+        set((s) => afterHouseholdChange(s, s.household ? { ...s.household, ...patch } : null)),
       addMember: (m) =>
-        set((s) => ({
-          household: s.household
-            ? { ...s.household, members: [...s.household.members, m] }
-            : null,
-        })),
+        set((s) =>
+          afterHouseholdChange(
+            s,
+            s.household ? { ...s.household, members: [...s.household.members, m] } : null,
+          ),
+        ),
       updateMember: (id, patch) =>
-        set((s) => ({
-          household: s.household
-            ? {
-                ...s.household,
-                members: s.household.members.map((m) =>
-                  m.id === id ? { ...m, ...patch } : m
-                ),
-              }
-            : null,
-        })),
+        set((s) =>
+          afterHouseholdChange(
+            s,
+            s.household
+              ? {
+                  ...s.household,
+                  members: s.household.members.map((m) => (m.id === id ? { ...m, ...patch } : m)),
+                }
+              : null,
+          ),
+        ),
       removeMember: (id) =>
         set((s) => ({
           household: s.household
@@ -298,6 +323,7 @@ export const useAppStore = create<AppState>()(
           household: { ...household, onboardingComplete: true },
           weeklyPlan: plan,
           usedRecipeHistory: [...usedRecipeHistory, ...newIds],
+          planNotice: unfilledNotice(plan),
         });
       },
       setOnboardingStep: (step) => set({ onboardingStep: step }),
@@ -307,22 +333,33 @@ export const useAppStore = create<AppState>()(
         if (!household) return;
         const plan = await generatePlan(household, usedRecipeHistory, pantry);
         const newIds = plan.meals.map(m => m.recipeId).filter((id): id is string => id !== null);
-        set({ weeklyPlan: plan, usedRecipeHistory: [...usedRecipeHistory, ...newIds] });
+        set({
+          weeklyPlan: plan,
+          usedRecipeHistory: [...usedRecipeHistory, ...newIds],
+          planNotice: unfilledNotice(plan),
+        });
       },
+      dismissPlanNotice: () => set({ planNotice: null }),
 
       swapMeal: (day, mealType, recipeId) =>
-        set((s) => ({
-          weeklyPlan: s.weeklyPlan
-            ? {
-                ...s.weeklyPlan,
-                meals: s.weeklyPlan.meals.map((m) =>
-                  m.day === day && m.mealType === mealType
-                    ? { ...m, recipeId, isOrderIn: false }
-                    : m
-                ),
-              }
-            : null,
-        })),
+        set((s) => {
+          // Refuse a recipe that conflicts with an allergy, whatever the UI offered.
+          const recipe = getRecipeById(recipeId);
+          const avoid = avoidListFor(s.household?.members ?? []);
+          if (!recipe || findConflicts(recipe, avoid).length > 0) return {};
+          return {
+            weeklyPlan: s.weeklyPlan
+              ? {
+                  ...s.weeklyPlan,
+                  meals: s.weeklyPlan.meals.map((m) =>
+                    m.day === day && m.mealType === mealType
+                      ? { ...m, recipeId, isOrderIn: false, cooked: false }
+                      : m
+                  ),
+                }
+              : null,
+          };
+        }),
 
       lockMeal: (day, mealType) =>
         set((s) => ({
@@ -345,7 +382,7 @@ export const useAppStore = create<AppState>()(
                 ...s.weeklyPlan,
                 meals: s.weeklyPlan.meals.map((m) =>
                   m.day === day && m.mealType === mealType
-                    ? { ...m, isOrderIn: !m.isOrderIn, recipeId: null }
+                    ? { ...m, isOrderIn: !m.isOrderIn, recipeId: null, cooked: false }
                     : m
                 ),
               }
@@ -355,53 +392,7 @@ export const useAppStore = create<AppState>()(
       buildShoppingList: () => {
         const { weeklyPlan, pantry } = get();
         if (!weeklyPlan) return;
-
-        // Keyed by canonical ingredient *name*, not recipe-authored ingredient
-        // id — the recipe library gives the same real ingredient a distinct id
-        // per recipe (onion, onion2, …onion15), so keying by id was listing
-        // "Onion" as up to 15 separate rows and netting pantry stock off each
-        // one independently instead of once against the combined weekly need.
-        const ingredientMap = new Map<string, ShoppingItem>();
-
-        for (const meal of weeklyPlan.meals) {
-          if (!meal.recipeId || meal.isOrderIn) continue;
-          const recipe = RECIPES.find((r) => r.id === meal.recipeId);
-          if (!recipe) continue;
-
-          for (const ing of recipe.ingredients) {
-            const needed = ing.quantity * meal.servingsMultiplier / recipe.servings;
-            const key = ing.name.trim().toLowerCase();
-            const existing = ingredientMap.get(key);
-
-            if (existing) {
-              if (existing.unit.toLowerCase() === ing.unit.toLowerCase()) {
-                existing.qtyNeeded += needed;
-                continue;
-              }
-              const converted = convertQuantity(needed, ing.unit, existing.unit);
-              if (converted !== null) {
-                existing.qtyNeeded += converted;
-                continue;
-              }
-              // Same ingredient name, incompatible units across recipes (rare) —
-              // keep a distinct line rather than silently corrupt the total.
-              const altKey = `${key}__${ing.unit.toLowerCase()}`;
-              const altExisting = ingredientMap.get(altKey);
-              if (altExisting) {
-                altExisting.qtyNeeded += needed;
-              } else {
-                ingredientMap.set(altKey, newShoppingItem(ing, needed, pantry));
-              }
-              continue;
-            }
-            ingredientMap.set(key, newShoppingItem(ing, needed, pantry));
-          }
-        }
-
-        const list = Array.from(ingredientMap.values())
-          .map((i) => ({ ...i, qtyToBuy: Math.max(0, i.qtyNeeded - i.qtyInStock) }))
-          .filter((i) => i.qtyToBuy > 0);
-        set({ shoppingList: list });
+        set({ shoppingList: computeShoppingList(weeklyPlan, pantry, getRecipeById) });
       },
 
       toggleShoppingItem: (ingredientId) =>
@@ -539,31 +530,20 @@ export const useAppStore = create<AppState>()(
         const meal = weeklyPlan?.meals.find(
           (m) => m.day === day && m.mealType === mealType
         );
-        if (!meal?.recipeId) return;
-        const recipe = RECIPES.find((r) => r.id === meal.recipeId);
+        // A meal is cooked once: tapping again must not reduce the pantry a second time.
+        if (!weeklyPlan || !meal?.recipeId || meal.cooked) return;
+        const recipe = getRecipeById(meal.recipeId);
         if (!recipe) return;
 
-        let updatedPantry = [...pantry];
-        for (const ing of recipe.ingredients) {
-          let remainingInIngUnit = ing.quantity * meal.servingsMultiplier / recipe.servings;
-          const key = ing.name.trim().toLowerCase();
-          // Deplete across every matching pantry entry (not just the first —
-          // a second "Onion" row used to be invisible to this math), in
-          // array order, until the recipe's need is covered or stock runs out.
-          updatedPantry = updatedPantry.map((p) => {
-            if (remainingInIngUnit <= 0 || p.name.trim().toLowerCase() !== key) return p;
-            const neededInPantryUnit = convertQuantity(remainingInIngUnit, ing.unit, p.unit);
-            if (neededInPantryUnit === null) return p; // incompatible units — skip rather than corrupt
-            const deductedInPantryUnit = Math.min(p.quantity, neededInPantryUnit);
-            remainingInIngUnit -= convertQuantity(deductedInPantryUnit, p.unit, ing.unit) ?? 0;
-            return {
-              ...p,
-              quantity: Math.max(0, p.quantity - deductedInPantryUnit),
-              updatedAt: new Date().toISOString(),
-            };
-          });
-        }
-        set({ pantry: updatedPantry });
+        set({
+          pantry: deductFromPantry(pantry, recipe, meal.servingsMultiplier),
+          weeklyPlan: {
+            ...weeklyPlan,
+            meals: weeklyPlan.meals.map((m) =>
+              m.day === day && m.mealType === mealType ? { ...m, cooked: true } : m
+            ),
+          },
+        });
       },
 
       checkDeliveries: async () => {

@@ -1,7 +1,7 @@
 "use client";
-import { useEffect, useState } from "react";
-import { useRouter } from "next/navigation";
+import { useState } from "react";
 import { useAppStore } from "@/lib/store";
+import { useRequireOnboarding } from "@/lib/useRequireOnboarding";
 import { getRecipeById, filterRecipes, effectiveDietType, excludedIngredientTerms, householdGoals } from "@/lib/recipes";
 import { DAYS, DAYS_FULL, MEAL_LABELS } from "@/lib/utils";
 import { cn } from "@/lib/utils";
@@ -15,8 +15,7 @@ import { useCommerceStatus } from "@/lib/mcp/useCommerceStatus";
 const MEAL_TYPES = ["breakfast", "lunch", "snack", "dinner"] as const;
 
 export default function CalendarPage() {
-  const router = useRouter();
-  const { weeklyPlan, household, generateWeeklyPlan, swapMeal, lockMeal, toggleOrderIn, buildShoppingList, markMealCooked } = useAppStore();
+  const { weeklyPlan, household, generateWeeklyPlan, swapMeal, lockMeal, toggleOrderIn, buildShoppingList, markMealCooked, planNotice, dismissPlanNotice } = useAppStore();
   const [selectedDay, setSelectedDay] = useState(0);
   const [swapTarget, setSwapTarget] = useState<{ day: number; mealType: string } | null>(null);
   const [detailMeal, setDetailMeal] = useState<{ day: number; mealType: string } | null>(null);
@@ -28,11 +27,7 @@ export default function CalendarPage() {
 
   // Deep-linking here without completing onboarding leaves household null
   // (or incomplete) — bounce to onboarding instead of showing an indefinite loader.
-  useEffect(() => {
-    if (!household?.onboardingComplete) {
-      router.replace("/onboarding");
-    }
-  }, [household, router]);
+  useRequireOnboarding();
 
   if (!household?.onboardingComplete) {
     return (
@@ -162,6 +157,15 @@ export default function CalendarPage() {
         )}
       </div>
 
+      {planNotice && (
+        <div role="status" className="flex items-start gap-3 bg-amber-50 border-b border-amber-200 px-4 py-3 lg:px-8 text-sm text-amber-900">
+          <p className="flex-1">{planNotice}</p>
+          <button onClick={dismissPlanNotice} aria-label="Dismiss" className="p-1 text-amber-700 hover:text-amber-900">
+            <X className="w-4 h-4" />
+          </button>
+        </div>
+      )}
+
       {/* Desktop: 7-column grid; Mobile: single day */}
       <div className="hidden lg:grid grid-cols-7 gap-0 flex-1 overflow-auto">
         {DAYS.map((d, day) => (
@@ -184,7 +188,7 @@ export default function CalendarPage() {
                     onDetail={() => setDetailMeal({ day, mealType: mt })}
                     onSwap={() => setSwapTarget({ day, mealType: mt })}
                     onLock={() => lockMeal(day, mt)}
-                    onCooked={() => { markMealCooked(day, mt); toast.success("Meal marked as cooked!"); }}
+                    onCooked={() => { if (meal?.cooked) return; markMealCooked(day, mt); toast.success("Meal marked as cooked!"); }}
                     onOrderIn={() => toggleOrderIn(day, mt)}
                   />
                 );
@@ -209,7 +213,7 @@ export default function CalendarPage() {
               onDetail={() => setDetailMeal({ day: selectedDay, mealType: mt })}
               onSwap={() => setSwapTarget({ day: selectedDay, mealType: mt })}
               onLock={() => lockMeal(selectedDay, mt)}
-              onCooked={() => { markMealCooked(selectedDay, mt); toast.success("Meal marked as cooked! Pantry updated."); }}
+              onCooked={() => { if (meal?.cooked) return; markMealCooked(selectedDay, mt); toast.success("Meal marked as cooked! Pantry updated."); }}
               onOrderIn={() => toggleOrderIn(selectedDay, mt)}
             />
           );
@@ -366,7 +370,7 @@ function MealCard({
             {meal?.locked ? <><Unlock className="w-3 h-3" /> Unlock</> : <><Lock className="w-3 h-3" /> Lock</>}
           </ActionBtn>
           <ActionBtn onClick={(e) => { e.stopPropagation(); onCooked(); }}>
-            <Check className="w-3 h-3" /> Cooked
+            <Check className="w-3 h-3" /> {meal?.cooked ? "Cooked ✓" : "Cooked"}
           </ActionBtn>
           {mealType === "dinner" && (
             <ActionBtn onClick={(e) => { e.stopPropagation(); onOrderIn(); }}>🛵 Order In</ActionBtn>

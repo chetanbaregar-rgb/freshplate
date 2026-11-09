@@ -1,7 +1,7 @@
 "use client";
-import { useEffect, useMemo, useState } from "react";
-import { useRouter } from "next/navigation";
+import { useMemo, useState } from "react";
 import { useAppStore } from "@/lib/store";
+import { useRequireOnboarding } from "@/lib/useRequireOnboarding";
 import { RECIPES } from "@/lib/recipes";
 import { MEAL_LABELS, DIET_LABELS, cn } from "@/lib/utils";
 import AppShell from "@/components/layout/AppShell";
@@ -14,7 +14,6 @@ const MEAL_FILTERS: ("all" | MealType)[] = ["all", "breakfast", "lunch", "snack"
 const DIET_EMOJI: Record<DietType, string> = { veg: "🥦", egg: "🥚", nonveg: "🍗" };
 
 export default function RecipesPage() {
-  const router = useRouter();
   const { household } = useAppStore();
   const [query, setQuery] = useState("");
   const [dietFilter, setDietFilter] = useState<"all" | DietType>("all");
@@ -24,11 +23,7 @@ export default function RecipesPage() {
   // Deep-linking here without completing onboarding leaves household null
   // (or incomplete) — bounce to onboarding instead of rendering blank, same
   // guard every other tab uses.
-  useEffect(() => {
-    if (!household?.onboardingComplete) {
-      router.replace("/onboarding");
-    }
-  }, [household, router]);
+  useRequireOnboarding();
 
   const filtered = useMemo(() => {
     const q = query.trim().toLowerCase();

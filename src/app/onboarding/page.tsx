@@ -5,6 +5,8 @@ import { motion, AnimatePresence } from "framer-motion";
 import { ChefHat, ArrowRight, ArrowLeft, Plus, Trash2, Check, Loader2 } from "lucide-react";
 import { toast } from "sonner";
 import { useAppStore } from "@/lib/store";
+import AllergyPicker from "@/components/AllergyPicker";
+import { avoidLabel } from "@/lib/allergens";
 import { INDIAN_STATES, GOAL_LABELS, DIET_LABELS } from "@/lib/utils";
 import type { Member, DietType, HealthGoal, Gender, ActivityLevel } from "@/lib/types";
 
@@ -35,8 +37,8 @@ export default function OnboardingPage() {
   });
   // Kept as raw text (not parsed into arrays on every keystroke) so typing
   // "peanuts, tree nuts" doesn't fight a join/split re-render mid-word.
-  const [allergiesText, setAllergiesText] = useState("");
-  const [dislikesText, setDislikesText] = useState("");
+  // Bumped after each member is added so the allergy boxes start empty again.
+  const [memberFormKey, setMemberFormKey] = useState(0);
 
   // Step 5: location
   const [address, setAddress] = useState("");
@@ -77,12 +79,12 @@ export default function OnboardingPage() {
   // what actually survives a refresh mid-flow (e.g. after adding 2 of 3
   // members, before ever clicking Continue). `household` is already in the
   // store's persist() allowlist, unlike this page's own local state.
-  // `onboardingComplete` stays false here so a resumed-but-unfinished
-  // household is never mistaken for a finished one by other pages (see
-  // src/app/page.tsx's redirect, which sends anything with
-  // onboardingComplete !== true back to /onboarding — exactly where we are).
+  // A draft that was never finished stays `onboardingComplete: false`, so
+  // other pages send it back here. A household that was already finished keeps
+  // its flag: just opening this page must not log the user out of their plan.
   useEffect(() => {
     if (!state && !stateOfOrigin && members.length === 0 && !address) return;
+    const saved = useAppStore.getState().household;
     setHousehold({
       id: householdIdRef.current,
       name: `${members[0]?.name ?? "My"}'s Family`,
@@ -91,8 +93,8 @@ export default function OnboardingPage() {
       dietType,
       members,
       deliveryAddress: address,
-      connectedPlatforms: [],
-      onboardingComplete: false,
+      connectedPlatforms: saved?.connectedPlatforms ?? [],
+      onboardingComplete: saved?.onboardingComplete ?? false,
     });
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [state, stateOfOrigin, dietType, members, address]);
@@ -101,8 +103,6 @@ export default function OnboardingPage() {
     setDir(delta);
     setStep((s) => s + delta);
   };
-
-  const parseCsv = (text: string) => text.split(",").map((s) => s.trim()).filter(Boolean);
 
   const handleAddMember = () => {
     if (!editingMember.name || !editingMember.age) return;
@@ -115,13 +115,12 @@ export default function OnboardingPage() {
       heightCm: editingMember.heightCm,
       healthGoal: (editingMember.healthGoal ?? "maintenance") as HealthGoal,
       activityLevel: (editingMember.activityLevel ?? "moderate") as ActivityLevel,
-      allergies: parseCsv(allergiesText),
-      dislikes: parseCsv(dislikesText),
+      allergies: editingMember.allergies ?? [],
+      dislikes: editingMember.dislikes ?? [],
     };
     setMembers((prev) => [...prev, m]);
     setEditingMember({ name: "", age: 30, gender: "female", healthGoal: "maintenance", activityLevel: "moderate", allergies: [], dislikes: [] });
-    setAllergiesText("");
-    setDislikesText("");
+    setMemberFormKey((k) => k + 1);
   };
 
   const handleFinish = async () => {
@@ -312,21 +311,12 @@ export default function OnboardingPage() {
                   />
                 </div>
                 <p className="text-[11px] text-muted-foreground -mb-1">Used for accurate calorie/protein targets — skip and we&apos;ll estimate.</p>
-                <input
-                  placeholder="Allergies (comma-separated, optional)"
-                  aria-label="Allergies, comma-separated, optional"
-                  value={allergiesText}
-                  onChange={(e) => setAllergiesText(e.target.value)}
-                  className="w-full border border-gray-200 rounded-xl p-3 text-sm focus:outline-none focus:ring-2 focus:ring-brand-400"
+                <AllergyPicker
+                  key={memberFormKey}
+                  allergies={editingMember.allergies ?? []}
+                  dislikes={editingMember.dislikes ?? []}
+                  onChange={(v) => setEditingMember((p) => ({ ...p, ...v }))}
                 />
-                <input
-                  placeholder="Dislikes (comma-separated, optional)"
-                  aria-label="Dislikes, comma-separated, optional"
-                  value={dislikesText}
-                  onChange={(e) => setDislikesText(e.target.value)}
-                  className="w-full border border-gray-200 rounded-xl p-3 text-sm focus:outline-none focus:ring-2 focus:ring-brand-400"
-                />
-                <p className="text-[11px] text-muted-foreground -mt-1">We&apos;ll never suggest a recipe containing these for anyone in the household.</p>
                 <button
                   onClick={handleAddMember}
                   disabled={!editingMember.name}
@@ -408,6 +398,11 @@ export default function OnboardingPage() {
                         <div key={m.id} className="flex items-center justify-between">
                           <span className="text-sm font-medium">{m.name} ({m.age})</span>
                           <span className="text-xs bg-sage-100 text-sage-700 px-2 py-1 rounded-full">{GOAL_LABELS[m.healthGoal]}</span>
+                        </div>
+                      ))}
+                      {members.filter((m) => m.allergies.length > 0).map((m) => (
+                        <div key={`a-${m.id}`} className="text-xs text-red-700">
+                          {m.name}: no {m.allergies.map(avoidLabel).join(", ")}
                         </div>
                       ))}
                     </div>

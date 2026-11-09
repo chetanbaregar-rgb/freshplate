@@ -2,7 +2,10 @@
 import { useEffect, useState } from "react";
 import { useRouter } from "next/navigation";
 import { useAppStore } from "@/lib/store";
+import { useRequireOnboarding } from "@/lib/useRequireOnboarding";
 import AppShell from "@/components/layout/AppShell";
+import AllergyPicker from "@/components/AllergyPicker";
+import { avoidLabel } from "@/lib/allergens";
 import { GOAL_LABELS, DIET_LABELS } from "@/lib/utils";
 import { goalColor, computeTarget } from "@/lib/nutrition";
 import { User, Plus, Trash2, ChevronRight, Zap, Package, RotateCcw, X, ChefHat } from "lucide-react";
@@ -40,16 +43,11 @@ export default function ProfilePage() {
   const [newMember, setNewMember] = useState<Partial<Member>>({
     name: "", age: 25, gender: "female", healthGoal: "maintenance", activityLevel: "moderate", allergies: [], dislikes: [],
   });
-  const [newAllergiesText, setNewAllergiesText] = useState("");
-  const [newDislikesText, setNewDislikesText] = useState("");
+  const [editingAllergiesFor, setEditingAllergiesFor] = useState<string | null>(null);
 
   // Deep-linking here without completing onboarding leaves household null
   // (or incomplete) — bounce to onboarding instead of rendering a blank page.
-  useEffect(() => {
-    if (!household?.onboardingComplete) {
-      router.replace("/onboarding");
-    }
-  }, [household, router]);
+  useRequireOnboarding();
 
   if (!household?.onboardingComplete) {
     return (
@@ -63,8 +61,6 @@ export default function ProfilePage() {
     );
   }
 
-  const parseCsv = (text: string) => text.split(",").map((s) => s.trim()).filter(Boolean);
-
   const handleAddMember = () => {
     if (!newMember.name) return;
     addMember({
@@ -76,14 +72,22 @@ export default function ProfilePage() {
       heightCm: newMember.heightCm,
       healthGoal: newMember.healthGoal as HealthGoal ?? "maintenance",
       activityLevel: newMember.activityLevel as ActivityLevel ?? "moderate",
-      allergies: parseCsv(newAllergiesText),
-      dislikes: parseCsv(newDislikesText),
+      allergies: newMember.allergies ?? [],
+      dislikes: newMember.dislikes ?? [],
     });
     setShowAddMember(false);
     setNewMember({ name: "", age: 25, gender: "female", healthGoal: "maintenance", activityLevel: "moderate", allergies: [], dislikes: [] });
-    setNewAllergiesText("");
-    setNewDislikesText("");
     toast.success("Member added! Regenerate your plan to include them.");
+    const notice = useAppStore.getState().planNotice;
+    if (notice) toast.warning(notice);
+  };
+
+  const handleSaveAllergies = (id: string, v: { allergies: string[]; dislikes: string[] }) => {
+    updateMember(id, v);
+    setEditingAllergiesFor(null);
+    toast.success("Allergies saved.");
+    const notice = useAppStore.getState().planNotice;
+    if (notice) toast.warning(notice);
   };
 
   const handleRestart = () => {
@@ -178,14 +182,31 @@ export default function ProfilePage() {
                           ))}
                         </select>
                       </div>
-                      {(m.allergies.length > 0 || m.dislikes.length > 0) && (
-                        <div className="flex flex-wrap gap-1 mt-2">
+                      {editingAllergiesFor === m.id ? (
+                        <div className="mt-2">
+                          <AllergyEditor
+                            member={m}
+                            onSave={(v) => handleSaveAllergies(m.id, v)}
+                            onCancel={() => setEditingAllergiesFor(null)}
+                          />
+                        </div>
+                      ) : (
+                        <div className="flex flex-wrap items-center gap-1 mt-2">
+                          {m.allergies.length === 0 && m.dislikes.length === 0 && (
+                            <span className="text-[10px] text-muted-foreground">No allergies or dislikes set</span>
+                          )}
                           {m.allergies.map((a) => (
-                            <span key={a} className="text-[10px] bg-red-50 text-red-600 px-2 py-0.5 rounded-full">⚠ {a}</span>
+                            <span key={a} className="text-[10px] bg-red-50 text-red-600 px-2 py-0.5 rounded-full">⚠ {avoidLabel(a)}</span>
                           ))}
                           {m.dislikes.map((d) => (
                             <span key={d} className="text-[10px] bg-gray-100 text-gray-500 px-2 py-0.5 rounded-full">{d}</span>
                           ))}
+                          <button
+                            onClick={() => setEditingAllergiesFor(m.id)}
+                            className="text-xs text-brand-600 font-medium ml-1 py-1"
+                          >
+                            Edit allergies
+                          </button>
                         </div>
                       )}
                     </div>
@@ -322,19 +343,10 @@ export default function ProfilePage() {
                   className="border border-gray-200 rounded-xl p-3 text-sm focus:outline-none focus:ring-2 focus:ring-brand-400"
                 />
               </div>
-              <input
-                placeholder="Allergies (comma-separated, optional)"
-                aria-label="Allergies, comma-separated, optional"
-                value={newAllergiesText}
-                onChange={(e) => setNewAllergiesText(e.target.value)}
-                className="w-full border border-gray-200 rounded-xl p-3 text-sm focus:outline-none focus:ring-2 focus:ring-brand-400"
-              />
-              <input
-                placeholder="Dislikes (comma-separated, optional)"
-                aria-label="Dislikes, comma-separated, optional"
-                value={newDislikesText}
-                onChange={(e) => setNewDislikesText(e.target.value)}
-                className="w-full border border-gray-200 rounded-xl p-3 text-sm focus:outline-none focus:ring-2 focus:ring-brand-400"
+              <AllergyPicker
+                allergies={newMember.allergies ?? []}
+                dislikes={newMember.dislikes ?? []}
+                onChange={(v) => setNewMember((p) => ({ ...p, ...v }))}
               />
               <button
                 onClick={handleAddMember}
@@ -348,6 +360,27 @@ export default function ProfilePage() {
         </div>
       )}
     </AppShell>
+  );
+}
+
+function AllergyEditor({ member, onSave, onCancel }: {
+  member: Member;
+  onSave: (v: { allergies: string[]; dislikes: string[] }) => void;
+  onCancel: () => void;
+}) {
+  const [draft, setDraft] = useState({ allergies: member.allergies, dislikes: member.dislikes });
+  return (
+    <div className="space-y-3">
+      <AllergyPicker allergies={draft.allergies} dislikes={draft.dislikes} onChange={setDraft} />
+      <div className="flex gap-2">
+        <button onClick={() => onSave(draft)} className="flex-1 bg-brand-500 text-white font-semibold py-2.5 rounded-xl text-sm hover:bg-brand-600">
+          Save
+        </button>
+        <button onClick={onCancel} className="px-4 py-2.5 border border-gray-200 rounded-xl text-sm text-gray-600 hover:bg-gray-50">
+          Cancel
+        </button>
+      </div>
+    </div>
   );
 }
 

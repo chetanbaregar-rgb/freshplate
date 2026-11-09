@@ -1,4 +1,5 @@
 import type { Recipe, Ingredient, Household, DietType, HealthGoal } from "./types";
+import { avoidListFor, findConflicts } from "./allergens";
 import { NORTH_RECIPES } from "./recipes/north";
 import { WEST_RECIPES } from "./recipes/west";
 import { SOUTH_RECIPES } from "./recipes/south";
@@ -681,8 +682,9 @@ export function filterRecipes(params: {
   goalTags?: string[];
   state?: string;
   excludeIds?: string[];
-  /** Lowercased substrings matched against ingredient names — a hard safety
-   *  filter for household-wide allergies/dislikes, not a preference weight. */
+  /** Allergies and dislikes (preset keys like "peanut", or free text) — a hard safety
+   *  filter, not a preference weight. Matched as whole words against the recipe's name,
+   *  description, ingredients (and their search terms) and steps; see `findConflicts`. */
   excludeIngredientTerms?: string[];
 }): Recipe[] {
   return RECIPES.filter((r) => {
@@ -692,10 +694,7 @@ export function filterRecipes(params: {
     if (params.goalTags?.length && !params.goalTags.some((g) => r.goalTags.includes(g as never))) return false;
     if (params.state && !r.cuisineRegion.includes(params.state) && !r.cuisineRegion.includes("Pan-India")) return false;
     if (params.excludeIds?.includes(r.id)) return false;
-    if (
-      params.excludeIngredientTerms?.length &&
-      r.ingredients.some((ing) => params.excludeIngredientTerms!.some((t) => ing.name.toLowerCase().includes(t)))
-    ) {
+    if (params.excludeIngredientTerms?.length && findConflicts(r, params.excludeIngredientTerms).length > 0) {
       return false;
     }
     return true;
@@ -720,17 +719,10 @@ export function effectiveDietType(household: Household): DietType {
 }
 
 /** Union of every household member's allergies + dislikes, normalized for
- *  use as `filterRecipes`'s `excludeIngredientTerms`. Allergies are a safety
+ *  use as `filterRecipes`'s `excludeIngredientTerms` (see `avoidListFor`). Allergies are a safety
  *  requirement, so this is always a hard exclusion, never a soft preference. */
 export function excludedIngredientTerms(household: Household): string[] {
-  const terms = new Set<string>();
-  for (const m of household.members) {
-    for (const term of [...m.allergies, ...m.dislikes]) {
-      const t = term.trim().toLowerCase();
-      if (t) terms.add(t);
-    }
-  }
-  return Array.from(terms);
+  return avoidListFor(household.members);
 }
 
 /** Every distinct health goal represented in the household — used so plan
