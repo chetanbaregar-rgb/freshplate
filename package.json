@@ -8,7 +8,8 @@
     "start": "next start",
     "lint": "next lint",
     "typecheck": "tsc --noEmit",
-    "test": "vitest run"
+    "test": "vitest run",
+    "recipes:coverage": "vite-node scripts/recipe-coverage.ts"
   },
   "dependencies": {
     "@hookform/resolvers": "^3.10.0",

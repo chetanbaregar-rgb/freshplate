@@ -6,6 +6,7 @@ import { SOUTH_RECIPES } from "./recipes/south";
 import { EAST_RECIPES } from "./recipes/east";
 import { CENTRAL_RECIPES } from "./recipes/central";
 import { NORTHEAST_RECIPES } from "./recipes/northeast";
+import { UNION_TERRITORY_RECIPES } from "./recipes/unionTerritories";
 
 const CORE_RECIPES: Recipe[] = [
   // BREAKFAST
@@ -653,6 +654,7 @@ export const RECIPES: Recipe[] = [
   ...EAST_RECIPES,
   ...CENTRAL_RECIPES,
   ...NORTHEAST_RECIPES,
+  ...UNION_TERRITORY_RECIPES,
 ];
 
 export function getRecipeById(id: string): Recipe | undefined {
