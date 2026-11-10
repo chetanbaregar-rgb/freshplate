@@ -2,7 +2,7 @@ import { NextRequest, NextResponse } from "next/server";
 import { z } from "zod";
 import { getPlatformSession, setPlatformSession, clearPlatformSession } from "@/lib/mcp/session";
 import { getCommerceModule, getMcpEndpoint, isPlatform } from "@/lib/mcp/registry";
-import { getOAuthConfig, refreshAccessToken } from "@/lib/mcp/oauth";
+import { isDynamicRegistration, OAuthTokenError, refreshAccessToken, resolveOAuthConfig } from "@/lib/mcp/oauth";
 import type { CartLineInput, McpContext } from "@/lib/mcp/commerceTypes";
 
 /**
@@ -60,8 +60,13 @@ export async function POST(request: NextRequest, { params }: { params: Promise<{
   // confusing 502 just because the access token happened to lapse.
   if (session.expiresAt && session.expiresAt < Date.now() + 60_000 && session.refreshToken) {
     try {
-      const config = getOAuthConfig(platform);
+      const config = await resolveOAuthConfig(
+        platform,
+        session.clientId ? { clientId: session.clientId, clientSecret: session.clientSecret } : undefined
+      );
       const newTokens = await refreshAccessToken(config, session.refreshToken);
+      // Swiggy rotates refresh tokens: the one we just used no longer works, so the new one must
+      // be saved or the next refresh would fail.
       session = {
         ...session,
         accessToken: newTokens.access_token,
@@ -69,7 +74,12 @@ export async function POST(request: NextRequest, { params }: { params: Promise<{
         expiresAt: newTokens.expires_in ? Date.now() + newTokens.expires_in * 1000 : undefined,
       };
       await setPlatformSession(platform, session);
-    } catch {
+    } catch (err) {
+      // Instamart's token service being briefly down says nothing about the refresh token, so keep
+      // the connection and let the caller retry rather than forcing the person to sign in again.
+      if (isDynamicRegistration(platform) && err instanceof OAuthTokenError && err.transient) {
+        return NextResponse.json({ error: "temporarily_unavailable" }, { status: 503 });
+      }
       // Refresh token is also expired/revoked — there's no way to recover
       // this session server-side. Clear it so the client sees a clean
       // "reconnect" state instead of repeatedly retrying a dead token.

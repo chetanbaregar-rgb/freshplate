@@ -12,7 +12,7 @@ export function getCommerceModule(platform: Platform): CommerceModule {
 export function getMcpEndpoint(platform: Platform): string {
   return platform === "zepto"
     ? process.env.ZEPTO_MCP_URL ?? "https://mcp.zepto.co.in/mcp"
-    : process.env.INSTAMART_MCP_URL ?? "https://mcp.swiggy.com/im";
+    : process.env.INSTAMART_MCP_URL || "https://mcp.swiggy.com/im";
 }
 
 export function isPlatform(value: string): value is Platform {

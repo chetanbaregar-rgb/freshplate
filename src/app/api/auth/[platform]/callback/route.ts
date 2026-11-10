@@ -1,6 +1,6 @@
 import { randomUUID } from "crypto";
 import { NextRequest, NextResponse } from "next/server";
-import { exchangeCodeForToken, getOAuthConfig } from "@/lib/mcp/oauth";
+import { exchangeCodeForToken, resolveOAuthConfig } from "@/lib/mcp/oauth";
 import { consumePendingOAuth, setPlatformSession } from "@/lib/mcp/session";
 import { getCommerceModule, getMcpEndpoint, isPlatform } from "@/lib/mcp/registry";
 
@@ -38,7 +38,11 @@ export async function GET(request: NextRequest, { params }: { params: Promise<{ 
 
   let config;
   try {
-    config = getOAuthConfig(platform);
+    // Instamart must redeem the code with the client it registered when this sign-in began.
+    config = await resolveOAuthConfig(
+      platform,
+      pending.clientId ? { clientId: pending.clientId, clientSecret: pending.clientSecret } : undefined
+    );
   } catch (err) {
     return redirectToProfile(`connect_error=${encodeURIComponent((err as Error).message)}`);
   }
@@ -68,6 +72,8 @@ export async function GET(request: NextRequest, { params }: { params: Promise<{ 
       accessToken: token.access_token,
       refreshToken: token.refresh_token,
       expiresAt: token.expires_in ? Date.now() + token.expires_in * 1000 : undefined,
+      clientId: config.dynamic ? config.clientId : undefined,
+      clientSecret: config.dynamic ? config.clientSecret : undefined,
       deviceId,
       selectedAddressId,
       addressLabel,
